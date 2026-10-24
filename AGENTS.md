@@ -2,6 +2,10 @@
 
 给任何接手的智能体看的交接单（Codex / WorkBuddy / 其他）。先读这一份，细节再看 `README.md`。
 
+- 远程仓库：<https://github.com/Cyan-carp/wb-monitor>（公开，MIT）
+- 发行版：`WorkBuddyMonitor.exe` 挂在 [Releases](https://github.com/Cyan-carp/wb-monitor/releases)，不入库
+- `.workbuddy/memory/` 与 `wb-codebuddy.cmd` 是**本地文件**，已写进 `.gitignore`，不要提交
+
 ## 这是什么
 
 一个 Windows 桌面小工具：只读地跟随 codebuddy（WorkBuddy）的会话 JSONL，把「任务 / 思考 / 工具调用 / 回复」实时渲染成时间轴，用来盯另一个智能体在干什么。界面是「Python 本地 HTTP 服务 + Edge/Chrome 的 `--app` 独立窗口」，不是 Tk。
