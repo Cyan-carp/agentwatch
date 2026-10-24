@@ -120,6 +120,21 @@
   }
   .btn:hover{background:#1e242e;border-color:#2e3743}
   .btn.on{background:#243347;border-color:#365a86;color:#cfe3ff}
+  .btn.pin{background:#2a2214;border-color:#4a3a20;color:#d7a768;padding:4px 11px}
+  .btn.pin:hover{background:#332917;border-color:#5c4826}
+  .btn[hidden]{display:none}
+
+  /* 定时刷新：每隔几秒向服务端补拿增量，SSE 静默断掉也不会停住 */
+  .ival{
+    display:flex;align-items:center;gap:5px;
+    font-size:12px;color:#6b7280;white-space:nowrap;
+  }
+  .ival select{
+    background:#171c24;border:1px solid #232a34;color:#b7bec8;
+    font-family:var(--font);font-size:12px;border-radius:6px;
+    padding:4px 6px;cursor:pointer;outline:none;
+  }
+  .ival select:focus{border-color:#2f4a6b}
 
   .stream{
     flex:1;overflow-y:auto;padding:16px 22px 60px;
@@ -254,7 +269,17 @@
       <span id="status">等待中</span>
       <span class="sep">·</span>
       <span id="session">—</span>
+      <button id="unpin" class="btn pin" hidden title="恢复自动跟随最新会话">取消固定</button>
       <span class="grow"></span>
+      <label class="ival" title="每隔一段时间向服务端补拿增量，即使推送中断画面也会继续更新">
+        <span>刷新</span>
+        <select id="interval">
+          <option value="0">关</option>
+          <option value="3000">3 秒</option>
+          <option value="5000">5 秒</option>
+          <option value="10000">10 秒</option>
+        </select>
+      </label>
       <button id="pause" class="btn">暂停</button>
       <button id="clear" class="btn">清空</button>
     </header>
@@ -291,9 +316,16 @@
   const refreshBtn = document.getElementById("refresh");
   const jumpBtn = document.getElementById("jump");
   const offlineEl = document.getElementById("offline");
+  const intervalSel = document.getElementById("interval");
+  const unpinBtn = document.getElementById("unpin");
 
   let connectedOnce = false;
   let offlineTimer = null;
+  let es = null;                 // 当前 SSE 连接
+  let lastSeq = 0;               // 已渲染到的最后一条事件序号
+  let lastMsgAt = Date.now();    // 最后一次收到任何消息（含心跳）的时刻
+  let lastSessionsAt = 0;        // 上次刷新侧栏列表的时刻
+  let refreshTimer = null;
 
   function setOffline(on){
     offlineEl.classList.toggle("show", on);
@@ -431,17 +463,26 @@
   }
 
   function pushEvent(msg){
+    // 序号去重：SSE 和定时轮询可能同时送来同一条
+    if (typeof msg.seq === "number"){
+      if (msg.seq <= lastSeq) return;
+      lastSeq = msg.seq;
+    }
     if (paused){ buffered.push(msg); return; }
     renderEvent(msg);
     if (stickBottom) streamEl.scrollTop = streamEl.scrollHeight;
   }
 
   function setStatus(text){
-    statusEl.textContent = text;
-    const live = /跟随|同步|切换/.test(text);
+    const raw = String(text || "");
+    const pinned = /固定/.test(raw);
+    const live = !pinned && /跟随|同步|切换/.test(raw);
+    statusEl.textContent = pinned ? "已固定 · 不自动跟随"
+                                  : (raw || "等待中");
     dotEl.classList.toggle("pulse", live);
-    dotEl.style.background = live ? "var(--c-task)" : "#5b636e";
-    statusEl.style.color = live ? "var(--c-task)" : "#9aa1ab";
+    dotEl.style.background = live ? "var(--c-task)" : (pinned ? "#d7a768" : "#5b636e");
+    statusEl.style.color = live ? "var(--c-task)" : (pinned ? "#d7a768" : "#9aa1ab");
+    unpinBtn.hidden = !pinned;
   }
 
   function setStats(s){
@@ -564,21 +605,67 @@
   });
 
   // ---------------- 事件流 ----------------
+  // 两条腿：SSE 负责实时推送；定时轮询负责补断档。
+  // 任何一条断了，另一条都能把画面继续往前推。
+  function applyState(data){
+    (data.events || []).forEach(pushEvent);
+    if (data.status) setStatus(data.status);
+    if (typeof data.session === "string") sessionNameEl.textContent = data.session || "—";
+    setStats(data.stats);
+    if (data.dropped && typeof data.seq === "number" && data.seq > lastSeq){
+      lastSeq = data.seq;      // 断档太久，服务端只给最近一批，接受它别原地打转
+    }
+  }
+
+  async function tick(){
+    // 不判断 document.hidden：Chrome 的窗口遮挡检测会把被盖住的窗口标成 hidden，
+    // 那样轮询会静默停掉，正好又变成「看着不更新」。本机接口，几秒一次可以忽略。
+    let data;
+    try {
+      const resp = await fetch(`/api/state?after=${lastSeq}`, {cache: "no-store"});
+      data = await resp.json();
+    } catch (e){
+      setOffline(true);
+      return;
+    }
+    connectedOnce = true;
+    clearTimeout(offlineTimer);
+    offlineTimer = null;
+    setOffline(false);
+    applyState(data);
+
+    // 侧栏跟着刷，新会话会自己冒出来，不用手点 ⟳
+    if (Date.now() - lastSessionsAt > 15000){
+      lastSessionsAt = Date.now();
+      loadSessions(currentKeyword);
+    }
+  }
+
   function connect(){
-    const es = new EventSource("/events");
-    es.onmessage = ev => {
+    if (es){ try { es.close(); } catch (e){ /* 已经关了 */ } }
+    const sock = new EventSource("/events");
+    es = sock;
+    sock.onopen = () => { lastMsgAt = Date.now(); };
+    sock.onmessage = ev => {
+      lastMsgAt = Date.now();
       connectedOnce = true;
       clearTimeout(offlineTimer);
       offlineTimer = null;
       setOffline(false);
       let msg;
       try { msg = JSON.parse(ev.data); } catch (e){ return; }
+      if (msg.type === "ping"){
+        // 心跳只用来判断连接是否还活着，不推进 lastSeq
+        return;
+      }
       if (msg.type === "reset"){
         streamEl.innerHTML = "";
         buffered = [];
+        lastSeq = 0;                  // 回放的事件序号比 reset 小，得从 0 重新累积
         setStatus(msg.status || "等待中");
         sessionNameEl.textContent = msg.session || "—";
         setStats(msg.stats);
+        lastSessionsAt = Date.now();
         loadSessions(currentKeyword);
         return;
       }
@@ -587,15 +674,56 @@
       if (msg.type === "session"){ sessionNameEl.textContent = msg.text || "—"; return; }
       if (msg.type === "stats"){ setStats(msg.stats); return; }
     };
-    es.onerror = () => {
-      // 服务重启或连接中断时自动重连；一直连不上就亮提示条
-      es.close();
+    sock.onerror = () => {
+      if (es !== sock) return;        // 已经被新连接替换，别重复重连
+      try { sock.close(); } catch (e){ /* 忽略 */ }
+      es = null;
       if (!connectedOnce && !offlineTimer){
         offlineTimer = setTimeout(() => setOffline(true), 1500);
       }
       setTimeout(connect, 1200);
     };
   }
+
+  // 看门狗：18 秒没收到任何东西（连心跳都没有）就重连，防止流静默假死
+  setInterval(() => {
+    if (Date.now() - lastMsgAt < 18000) return;
+    lastMsgAt = Date.now();
+    connect();
+  }, 5000);
+
+  // 刷新间隔：默认 5 秒，选择记在本机
+  function setRefresh(ms){
+    if (refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
+    if (ms > 0) refreshTimer = setInterval(tick, ms);
+  }
+
+  const savedInterval = localStorage.getItem("wb.refresh") || "5000";
+  intervalSel.value = [...intervalSel.options].some(o => o.value === savedInterval)
+    ? savedInterval : "5000";
+  setRefresh(Number(intervalSel.value));
+  intervalSel.onchange = () => {
+    localStorage.setItem("wb.refresh", intervalSel.value);
+    setRefresh(Number(intervalSel.value));
+    if (Number(intervalSel.value) > 0) tick();
+  };
+
+  // 取消固定：回到自动跟随最新会话
+  unpinBtn.onclick = () => {
+    unpinBtn.hidden = true;
+    kwInput.value = "";
+    currentKeyword = "";
+    currentSessionPath = "";
+    setStatus("跟随中");
+    send({op: "set_keyword", value: "", label: "全部项目"});
+    loadSessions("");
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (Date.now() - lastMsgAt > 12000) connect();
+    tick();
+  });
 
   if (location.protocol === "file:"){
     setOffline(true);          // 直接双击 html 打开，注定没有数据源

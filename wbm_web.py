@@ -67,6 +67,7 @@ class Hub:
         self._clients: list[queue.Queue] = []
         self._lock = threading.Lock()
         self._recent: list[dict] = []
+        self._seq = 0                       # 事件序号，供前端补拿断档
         self.snapshot = {"status": "等待中", "session": "—", "stats": self.blank_stats()}
 
     @staticmethod
@@ -79,10 +80,27 @@ class Hub:
             self._clients.append(box)
             recent = list(self._recent)
             snap = dict(self.snapshot)
-        box.put_nowait({"type": "reset", **snap})
+            seq = self._seq
+        box.put_nowait({"type": "reset", **snap, "seq": seq})
         for item in recent:
             box.put_nowait(item)
         return box
+
+    def state(self, after: int) -> dict:
+        """给定时轮询用的快照：状态 + 序号 after 之后的事件。
+
+        SSE 是一条腿，这里再给一条腿：前端每隔几秒拿一次，即使 SSE 静默
+        断掉、或者被中间层缓冲住，画面也能靠它继续往前走。
+        """
+        with self._lock:
+            snap = dict(self.snapshot)
+            seq = self._seq
+            if after <= 0:
+                items = list(self._recent)
+            else:
+                items = [m for m in self._recent if m.get("seq", 0) > after]
+            dropped = bool(self._recent) and after > 0 and after < self._recent[0].get("seq", 0) - 1
+        return {"type": "state", **snap, "seq": seq, "events": items, "dropped": dropped}
 
     def unsubscribe(self, box: queue.Queue) -> None:
         with self._lock:
@@ -95,9 +113,15 @@ class Hub:
         with self._lock:
             return len(self._clients)
 
+    def current_seq(self) -> int:
+        with self._lock:
+            return self._seq
+
     def broadcast(self, msg: dict) -> None:
         with self._lock:
             if msg.get("type") == "event":
+                self._seq += 1
+                msg["seq"] = self._seq       # 单调递增，前端据此去重与补断档
                 self._recent.append(msg)
                 if len(self._recent) > RECENT_LIMIT:
                     del self._recent[: len(self._recent) - RECENT_LIMIT]
@@ -152,6 +176,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._serve_projects()
             elif path == "/api/sessions":
                 self._serve_sessions()
+            elif path == "/api/state":
+                self._serve_state()
             elif path == "/api/ping":
                 self._json({"ok": True})
             else:
@@ -183,8 +209,11 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     msg = box.get(timeout=5.0)
                 except queue.Empty:
-                    # 心跳：顺便让服务端尽快感知连接是否还在（关窗后能及时发现）
-                    self.wfile.write(b": ping\n\n")
+                    # 心跳用 JSON 而不是 SSE 注释：前端看得到，才能判断「服务还活着
+                    # 但事件不再流动」，注释行只会被浏览器静默丢掉。
+                    # 顺便让服务端尽快感知连接是否还在（关窗后能及时发现）
+                    beat = json.dumps({"type": "ping", "seq": self.hub.current_seq()})
+                    self.wfile.write(f"data: {beat}\n\n".encode("utf-8"))
                     self.wfile.flush()
                     continue
                 payload = json.dumps(msg, ensure_ascii=False)
@@ -194,6 +223,18 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             self.hub.unsubscribe(box)
+
+    def _serve_state(self) -> None:
+        """定时轮询用：当前状态 + 序号 after 之后的增量事件。"""
+        from urllib.parse import parse_qs, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        raw = (qs.get("after") or ["0"])[0]
+        try:
+            after = max(0, int(raw))
+        except (TypeError, ValueError):
+            after = 0
+        self._json(self.hub.state(after))
 
     def _serve_projects(self) -> None:
         items = []
@@ -310,6 +351,28 @@ class MonitorServer:
         self.watcher.start()
         self._pump_thread = threading.Thread(target=self._pump, name="pump", daemon=True)
         self._pump_thread.start()
+        threading.Thread(target=self._supervise, name="supervise", daemon=True).start()
+
+    def _supervise(self) -> None:
+        """看住两个后台线程：任何一个意外退出就重新拉起来。
+
+        没有这一层的话，pump 线程一旦抛异常死掉，SSE 心跳还在发、页面却再也
+        不会更新——表现就是「界面卡住」，而且日志里什么都看不到。
+        """
+        while not self.stop_event.wait(5.0):
+            try:
+                if self._pump_thread is not None and not self._pump_thread.is_alive():
+                    log_startup("pump 线程已退出，重启")
+                    self._pump_thread = threading.Thread(
+                        target=self._pump, name="pump", daemon=True)
+                    self._pump_thread.start()
+                if not self.watcher.is_alive():
+                    log_startup("watcher 线程已退出，重启")
+                    self.watcher = SessionWatcher(
+                        ROOT, self.updates, self.commands, self.stop_event)
+                    self.watcher.start()
+            except Exception:
+                log_startup("监督线程异常：" + traceback.format_exc(limit=3))
 
     def _pump(self) -> None:
         while not self.stop_event.is_set():
@@ -317,29 +380,36 @@ class MonitorServer:
                 update = self.updates.get(timeout=0.5)
             except queue.Empty:
                 continue
-            kind = update.operation
-            if kind == "event" and update.event is not None:
-                ev = update.event
-                if ev.kind in self.stats:
-                    self.stats[ev.kind] += 1
-                self.stats["events"] += 1
-                self.hub.broadcast({
-                    "type": "event",
-                    "kind": ev.kind,
-                    "label": ev.label,
-                    "text": ev.text,
-                    "ts": ev.timestamp_ms,
-                })
-                if self.stats["events"] % 4 == 0:
-                    self.hub.broadcast({"type": "stats", "stats": dict(self.stats)})
-            elif kind == "status":
-                self.hub.broadcast({"type": "status", "text": update.text})
-            elif kind == "session":
-                self.hub.broadcast({"type": "session", "text": update.text})
-            elif kind == "error":
-                self.hub.broadcast({"type": "event", "kind": "warning",
-                                    "label": "错误", "text": update.text, "ts": None})
+            try:
+                self._dispatch(update)
+            except Exception:
+                # 单条事件处理出错不该拖死整个泵
+                log_startup("处理事件出错：" + traceback.format_exc(limit=3))
         self.hub.broadcast({"type": "stats", "stats": dict(self.stats)})
+
+    def _dispatch(self, update: UiUpdate) -> None:
+        kind = update.operation
+        if kind == "event" and update.event is not None:
+            ev = update.event
+            if ev.kind in self.stats:
+                self.stats[ev.kind] += 1
+            self.stats["events"] += 1
+            self.hub.broadcast({
+                "type": "event",
+                "kind": ev.kind,
+                "label": ev.label,
+                "text": ev.text,
+                "ts": ev.timestamp_ms,
+            })
+            if self.stats["events"] % 4 == 0:
+                self.hub.broadcast({"type": "stats", "stats": dict(self.stats)})
+        elif kind == "status":
+            self.hub.broadcast({"type": "status", "text": update.text})
+        elif kind == "session":
+            self.hub.broadcast({"type": "session", "text": update.text})
+        elif kind == "error":
+            self.hub.broadcast({"type": "event", "kind": "warning",
+                                "label": "错误", "text": update.text, "ts": None})
 
     # -- HTTP --------------------------------------------------------------
     def serve(self) -> str:
