@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy Monitor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%23121823'/%3E%3Cg fill='%2358a6ff'%3E%3Crect x='19.6' y='21.1' width='5.6' height='21.8' rx='2.8'/%3E%3Crect x='29.2' y='15.4' width='5.6' height='33.2' rx='2.8'/%3E%3Crect x='38.8' y='19.2' width='5.6' height='25.6' rx='2.8'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0d1015;
+    --panel:#0d1015;
+    --side:#0a0d11;
+    --top:#12151a;
+    --line:#1b2028;
+    --fg:#e6e8eb;
+    --muted:#8b929c;
+    --dim:#6b7280;
+
+    --c-task:#e5c07b;
+    --c-think:#c678dd;
+    --c-call:#56b6c2;
+    --c-ok:#7ee787;
+    --c-err:#ff7b72;
+    --c-reply:#5ac8fa;
+    --c-sys:#61afef;
+    --c-warn:#d19a66;
+
+    --font:"Microsoft YaHei UI","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg);color:var(--fg);
+    font-family:var(--font);font-size:15px;line-height:1.75;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+  ::selection{background:#26405f}
+
+  .app{display:flex;height:100vh}
+
+  /* ---------------- 侧栏 ---------------- */
+  .side{
+    width:264px;flex:0 0 264px;background:var(--side);
+    display:flex;flex-direction:column;border-right:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:center;gap:11px;padding:18px 16px 14px}
+  .brand svg{flex:0 0 auto}
+  .brand .name{font-size:15px;font-weight:600;letter-spacing:.2px}
+  .brand .sub{font-size:12px;color:var(--muted);margin-top:1px}
+
+  .field{padding:0 16px 14px}
+  .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:6px}
+  .kw{
+    width:100%;background:#12161c;border:1px solid #20262f;border-radius:7px;
+    color:var(--fg);font-family:var(--font);font-size:13px;padding:7px 10px;
+    outline:none;transition:border-color .15s;
+  }
+  .kw:focus{border-color:#2f4a6b}
+  .kw::placeholder{color:#4d545e}
+
+  .sec-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:4px 16px 8px;font-size:12px;color:var(--dim);
+  }
+  .sec-head button{
+    background:none;border:0;color:#5b636e;cursor:pointer;font-size:14px;
+    padding:0 2px;line-height:1;
+  }
+  .sec-head button:hover{color:var(--fg)}
+
+  .sessions{flex:1;overflow-y:auto;padding:0 8px 8px}
+  .srow{
+    padding:7px 8px;border-radius:7px;cursor:pointer;
+    transition:background .12s;
+  }
+  .srow:hover{background:#12171e}
+  .srow.active{background:#16202c}
+  .srow .meta{
+    display:flex;justify-content:space-between;
+    font-family:var(--mono);font-size:11px;color:#5f6671;
+  }
+  .srow .prev{
+    font-size:12.5px;color:#9aa1ab;margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .srow.active .prev{color:#c3cad3}
+
+  .stats{
+    padding:10px 16px;border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:11.5px;color:#5f6671;
+  }
+
+  /* ---------------- 主区 ---------------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+
+  .top{
+    display:flex;align-items:center;gap:9px;
+    padding:12px 18px;background:var(--top);border-bottom:1px solid var(--line);
+  }
+  .dot{
+    width:9px;height:9px;border-radius:50%;background:var(--c-task);
+    flex:0 0 auto;
+  }
+  .dot.pulse{animation:breathe 2.2s ease-in-out infinite}
+  @keyframes breathe{
+    0%,100%{opacity:.45;transform:scale(.82)}
+    50%{opacity:1;transform:scale(1)}
+  }
+  #status{font-size:13.5px;font-weight:600;color:var(--c-task)}
+  .top .sep{color:#39414c}
+  #session{font-size:13px;color:#aeb5bf;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .grow{flex:1}
+  .btn{
+    background:#171c24;border:1px solid #232a34;color:#b7bec8;
+    font-family:var(--font);font-size:12.5px;padding:5px 13px;border-radius:7px;
+    cursor:pointer;transition:background .12s,border-color .12s;
+  }
+  .btn:hover{background:#1e242e;border-color:#2e3743}
+  .btn.on{background:#243347;border-color:#365a86;color:#cfe3ff}
+
+  .stream{
+    flex:1;overflow-y:auto;padding:16px 22px 60px;
+    scroll-behavior:auto;
+  }
+  .stream::-webkit-scrollbar{width:10px}
+  .stream::-webkit-scrollbar-thumb{background:#222932;border-radius:6px;border:2px solid var(--panel)}
+  .stream::-webkit-scrollbar-track{background:transparent}
+
+  /* ---------------- 事件 ---------------- */
+  .ev{margin:0 0 3px;padding:2px 0}
+  .ev .head{display:flex;align-items:center;gap:8px;height:26px}
+  .ev .gut{font-family:var(--mono);font-size:13px;width:14px;flex:0 0 14px;text-align:center}
+  .ev .ts{font-family:var(--mono);font-size:11.5px;color:#5f6671}
+  .ev .lbl{font-size:12.5px;font-weight:600}
+
+  .ev .bd{padding-left:22px;font-size:15px;line-height:1.78}
+  .ev.think .bd{color:#a9b0ba}
+  .ev.result_ok .bd,.ev.result_error .bd{font-size:14.5px}
+
+  /* 正文内部元素 */
+  .bd .ln{white-space:pre-wrap;word-break:break-word}
+  .bd .gap{height:9px}
+  .bd .h{color:#79c0ff;font-weight:600;margin:4px 0 2px}
+  .bd .li{position:relative;padding-left:16px;white-space:pre-wrap;word-break:break-word}
+  .bd .li::before{
+    content:"";position:absolute;left:4px;top:.72em;
+    width:4px;height:4px;border-radius:50%;background:#4b5563;
+  }
+  .bd .li.num::before{display:none}
+  .bd .li.num{padding-left:4px}
+  .bd hr{border:0;border-top:1px solid var(--line);margin:9px 0}
+  .bd .fold{
+    color:#5b636e;font-size:13px;font-style:normal;
+    padding:3px 0;
+  }
+  .bd .fold::before{content:"⋯ ";opacity:.7}
+
+  .bd code{
+    font-family:var(--mono);font-size:13px;
+    background:#181d24;color:#d5dae1;
+    padding:1px 5px;border-radius:4px;
+    border:1px solid #222932;
+  }
+  .bd strong{color:#fff;font-weight:600}
+  .bd .wl{color:#8ab4f8;border-bottom:1px dotted #3f587c;cursor:default}
+  .bd .lnk{color:#8ab4f8}
+  .bd pre.code{
+    font-family:var(--mono);font-size:13px;line-height:1.65;
+    background:#12171d;border:1px solid #1d232b;border-radius:7px;
+    padding:9px 12px;margin:6px 0;overflow-x:auto;color:#c8cdd4;
+  }
+
+  /* 任务/回复卡片 */
+  .ev.task,.ev.reply{
+    background:#11151b;border:1px solid #1a2028;border-radius:9px;
+    padding:9px 14px;margin:12px 0 6px;
+  }
+  .ev.reply{background:#0f141a}
+
+  .banner{
+    display:flex;align-items:center;gap:10px;
+    color:#4e5763;font-size:12.5px;margin:20px 0 10px;
+  }
+  .banner::before,.banner::after{content:"";flex:1;height:1px;background:#1b2028}
+
+  .jump{
+    position:fixed;right:26px;bottom:22px;
+    background:#1b2330;border:1px solid #2b3646;color:#9fb4cc;
+    font-size:12.5px;padding:6px 14px;border-radius:16px;cursor:pointer;
+    display:none;
+  }
+  .jump.show{display:block}
+
+  /* 没连上本地服务时的提示条 */
+  .offline{
+    position:fixed;left:0;right:0;top:0;z-index:60;display:none;
+    align-items:center;gap:8px;padding:10px 18px;
+    background:#2a1f14;border-bottom:1px solid #4a3620;
+    color:#d7a768;font-size:13px;
+  }
+  .offline.show{display:flex}
+  .offline b{color:#ffd08a;font-weight:600}
+</style>
+</head>
+<body>
+<div id="offline" class="offline">
+  <span>未连接到本地服务 ·</span>
+  <b>请双击 WorkBuddyMonitor.exe 启动</b>
+  <span>（单独打开这个网页文件没有数据源）</span>
+</div>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true">
+        <defs>
+          <linearGradient id="bm" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#bae2ff"/>
+            <stop offset="1" stop-color="#4e8af6"/>
+          </linearGradient>
+        </defs>
+        <rect width="64" height="64" rx="15" fill="#121823"/>
+        <g fill="url(#bm)">
+          <rect x="19.6" y="21.1" width="5.6" height="21.8" rx="2.8"/>
+          <rect x="29.2" y="15.4" width="5.6" height="33.2" rx="2.8"/>
+          <rect x="38.8" y="19.2" width="5.6" height="25.6" rx="2.8"/>
+        </g>
+      </svg>
+      <div>
+        <div class="name">WorkBuddy</div>
+        <div class="sub">编码子 Agent · 实时</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="kw">项目</label>
+      <input id="kw" class="kw" list="proj-list" placeholder="全部项目（可输入关键字）" autocomplete="off">
+      <datalist id="proj-list"></datalist>
+    </div>
+
+    <div class="sec-head">
+      <span>最近会话</span>
+      <button id="refresh" title="重新扫描">⟳</button>
+    </div>
+    <div id="sessions" class="sessions"></div>
+    <div id="stats" class="stats">事件 0 · 工具 0 · 思考 0 · 回复 0</div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <span id="dot" class="dot pulse"></span>
+      <span id="status">等待中</span>
+      <span class="sep">·</span>
+      <span id="session">—</span>
+      <span class="grow"></span>
+      <button id="pause" class="btn">暂停</button>
+      <button id="clear" class="btn">清空</button>
+    </header>
+    <div id="stream" class="stream"></div>
+    <button id="jump" class="jump">回到底部</button>
+  </main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  const KIND = {
+    task:        {gut:"▌", color:"var(--c-task)",  cls:"task"},
+    think:       {gut:"▌", color:"var(--c-think)", cls:"think"},
+    call:        {gut:"▸", color:"var(--c-call)",  cls:"call"},
+    result_ok:   {gut:"✔", color:"var(--c-ok)",    cls:"result_ok"},
+    result_error:{gut:"✖", color:"var(--c-err)",   cls:"result_error"},
+    reply:       {gut:"◆", color:"var(--c-reply)", cls:"reply"},
+    system:      {gut:"·", color:"var(--c-sys)",   cls:"system"},
+    warning:     {gut:"!", color:"var(--c-warn)",  cls:"warning"}
+  };
+
+  const streamEl = document.getElementById("stream");
+  const sessionEl = document.getElementById("sessions");
+  const statsEl = document.getElementById("stats");
+  const statusEl = document.getElementById("status");
+  const sessionNameEl = document.getElementById("session");
+  const dotEl = document.getElementById("dot");
+  const pauseBtn = document.getElementById("pause");
+  const clearBtn = document.getElementById("clear");
+  const kwInput = document.getElementById("kw");
+  const projList = document.getElementById("proj-list");
+  const refreshBtn = document.getElementById("refresh");
+  const jumpBtn = document.getElementById("jump");
+  const offlineEl = document.getElementById("offline");
+
+  let connectedOnce = false;
+  let offlineTimer = null;
+
+  function setOffline(on){
+    offlineEl.classList.toggle("show", on);
+  }
+
+  let paused = false;
+  let buffered = [];
+  let stickBottom = true;
+  let currentKeyword = "";
+  let currentSessionPath = "";
+
+  // ---------------- 文本清洗 ----------------
+  function esc(s){
+    return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  }
+
+  function shortPath(p){
+    const parts = String(p).split(/[\\/]+/).filter(Boolean);
+    if (parts.length <= 2) return p;
+    return "…/" + parts.slice(-2).join("/");
+  }
+
+  function inline(s){
+    let out = esc(s);
+    out = out.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`);
+    out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+    out = out.replace(/\[\[([^\]\n]+)\]\]/g, (_, inner) => {
+      const bar = inner.indexOf("|");
+      const target = bar >= 0 ? inner.slice(0, bar) : inner;
+      const text = bar >= 0 ? inner.slice(bar + 1) : shortPath(target);
+      return `<span class="wl" title="${target}">${text}</span>`;
+    });
+    out = out.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_, t) => `<span class="lnk">${t}</span>`);
+    return out;
+  }
+
+  function renderBody(text){
+    const lines = String(text == null ? "" : text).replace(/\r/g, "").split("\n");
+    const parts = [];
+    let i = 0;
+
+    // 顶部的 YAML frontmatter 整块折叠掉，不占版面
+    if (lines.length > 1 && lines[0].trim() === "---"){
+      let j = 1;
+      while (j < lines.length && lines[j].trim() !== "---") j++;
+      if (j < lines.length && j - 1 <= 40){
+        parts.push(`<div class="fold">省略元数据 ${j - 1} 行</div>`);
+        i = j + 1;
+      }
+    }
+
+    let inCode = false;
+    const codeBuf = [];
+
+    for (; i < lines.length; i++){
+      const raw = lines[i];
+      const t = raw.trim();
+
+      if (t.startsWith("```")){
+        if (inCode){
+          parts.push(`<pre class="code">${esc(codeBuf.join("\n"))}</pre>`);
+          codeBuf.length = 0;
+          inCode = false;
+        } else {
+          inCode = true;
+        }
+        continue;
+      }
+      if (inCode){ codeBuf.push(raw); continue; }
+
+      if (!t){ parts.push('<div class="gap"></div>'); continue; }
+      if (t === "---" || t === "***" || t === "___"){ parts.push("<hr>"); continue; }
+      if (/^#{1,6}\s+/.test(t)){
+        parts.push(`<div class="h">${inline(t.replace(/^#{1,6}\s+/, ""))}</div>`);
+        continue;
+      }
+      if (/^[-*+]\s+/.test(t)){
+        parts.push(`<div class="li">${inline(t.replace(/^[-*+]\s+/, ""))}</div>`);
+        continue;
+      }
+      if (/^\d+[.)]\s+/.test(t)){
+        parts.push(`<div class="li num">${inline(t)}</div>`);
+        continue;
+      }
+      if (t.startsWith("⋯")){
+        parts.push(`<div class="fold">${esc(t.replace(/^⋯\s*/, ""))}</div>`);
+        continue;
+      }
+      parts.push(`<div class="ln">${inline(raw)}</div>`);
+    }
+
+    if (inCode && codeBuf.length){
+      parts.push(`<pre class="code">${esc(codeBuf.join("\n"))}</pre>`);
+    }
+    return parts.join("");
+  }
+
+  function fmtTime(ms){
+    const d = ms ? new Date(ms) : new Date();
+    const p = n => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  // ---------------- 渲染 ----------------
+  function isBanner(msg){
+    return msg.kind === "system" && /切换到|固定会话/.test(msg.text || "");
+  }
+
+  function renderEvent(msg){
+    if (isBanner(msg)){
+      const el = document.createElement("div");
+      el.className = "banner";
+      el.textContent = (msg.text || "").replace(/^\[系统\]\s*/, "");
+      streamEl.appendChild(el);
+      return;
+    }
+
+    const k = KIND[msg.kind] || KIND.system;
+    const el = document.createElement("div");
+    el.className = "ev " + k.cls;
+
+    const time = msg.ts ? fmtTime(msg.ts) : "";
+    const label = msg.label ? esc(msg.label) : "";
+
+    el.innerHTML =
+      `<div class="head">` +
+        `<span class="gut" style="color:${k.color}">${k.gut}</span>` +
+        (time ? `<span class="ts">${time}</span>` : "") +
+        (label ? `<span class="lbl" style="color:${k.color}">${label}</span>` : "") +
+      `</div>` +
+      `<div class="bd">${renderBody(msg.text)}</div>`;
+
+    streamEl.appendChild(el);
+  }
+
+  function pushEvent(msg){
+    if (paused){ buffered.push(msg); return; }
+    renderEvent(msg);
+    if (stickBottom) streamEl.scrollTop = streamEl.scrollHeight;
+  }
+
+  function setStatus(text){
+    statusEl.textContent = text;
+    const live = /跟随|同步|切换/.test(text);
+    dotEl.classList.toggle("pulse", live);
+    dotEl.style.background = live ? "var(--c-task)" : "#5b636e";
+    statusEl.style.color = live ? "var(--c-task)" : "#9aa1ab";
+  }
+
+  function setStats(s){
+    if (!s) return;
+    statsEl.textContent =
+      `事件 ${s.events||0} · 工具 ${s.call||0} · 思考 ${s.think||0} · 回复 ${s.reply||0}`;
+  }
+
+  // ---------------- 侧栏 ----------------
+  // 项目候选：让输入框能下拉选择，不用记住项目名怎么拼
+  async function loadProjects(){
+    try {
+      const resp = await fetch("/api/projects");
+      const data = await resp.json();
+      projList.innerHTML = "";
+      (data.projects || []).forEach(p => {
+        const opt = document.createElement("option");
+        opt.value = p.name;
+        opt.label = `${p.count} 个会话`;
+        projList.appendChild(opt);
+      });
+    } catch (e){ /* 服务未就绪时忽略 */ }
+  }
+
+  async function loadSessions(keyword){
+    currentKeyword = keyword || "";
+    const qs = currentKeyword ? `?keyword=${encodeURIComponent(currentKeyword)}` : "";
+    let data = {sessions: []};
+    try {
+      const resp = await fetch("/api/sessions" + qs);
+      data = await resp.json();
+    } catch (e){ /* 服务未就绪时静默 */ }
+
+    // 输入的简称命中后，把输入框归一到真实项目名，避免下次又猜
+    if (data.matched && data.project && currentKeyword && kwInput.value.trim() !== data.project){
+      kwInput.value = data.project;
+    }
+
+    sessionEl.innerHTML = "";
+    if (!data.sessions.length){
+      const empty = document.createElement("div");
+      empty.className = "srow";
+      const tip = (data.matched === false)
+        ? `没有匹配「${currentKeyword}」的项目`
+        : "这个项目还没有会话";
+      empty.innerHTML = `<div class="prev">${esc(tip)}</div>`;
+      sessionEl.appendChild(empty);
+      return;
+    }
+    data.sessions.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "srow" + (s.path === currentSessionPath ? " active" : "");
+      row.innerHTML =
+        `<div class="meta"><span>${s.time}</span><span>${s.size}</span></div>` +
+        `<div class="prev">${esc(s.preview || "")}</div>`;
+      row.title = s.path;
+      row.onclick = () => {
+        currentSessionPath = s.path;
+        [...sessionEl.children].forEach(c => c.classList.remove("active"));
+        row.classList.add("active");
+        send({op: "pin_session", value: s.path, label: s.preview || ""});
+      };
+      sessionEl.appendChild(row);
+    });
+  }
+
+  async function send(payload){
+    try {
+      await fetch("/api/command", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+    } catch (e){ /* 忽略 */ }
+  }
+
+  kwInput.addEventListener("keydown", e => {
+    if (e.key !== "Enter") return;
+    const value = kwInput.value.trim();
+    send({op: "set_keyword", value, label: value || "全部项目"});
+    loadSessions(value);
+    kwInput.blur();
+  });
+
+  refreshBtn.onclick = () => { loadProjects(); loadSessions(currentKeyword); };
+
+  // ---------------- 交互 ----------------
+  pauseBtn.onclick = () => {
+    paused = !paused;
+    pauseBtn.classList.toggle("on", paused);
+    pauseBtn.textContent = paused ? "继续" : "暂停";
+    if (!paused && buffered.length){
+      buffered.forEach(renderEvent);
+      buffered = [];
+      streamEl.scrollTop = streamEl.scrollHeight;
+    }
+  };
+
+  clearBtn.onclick = () => {
+    streamEl.innerHTML = "";
+    buffered = [];
+  };
+
+  streamEl.addEventListener("scroll", () => {
+    const gap = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight;
+    stickBottom = gap < 48;
+    jumpBtn.classList.toggle("show", !stickBottom);
+  });
+
+  jumpBtn.onclick = () => {
+    stickBottom = true;
+    streamEl.scrollTop = streamEl.scrollHeight;
+    jumpBtn.classList.remove("show");
+  };
+
+  document.addEventListener("keydown", e => {
+    if (!e.ctrlKey) return;
+    if (e.key.toLowerCase() === "p"){ e.preventDefault(); pauseBtn.click(); }
+    if (e.key.toLowerCase() === "l"){ e.preventDefault(); clearBtn.click(); }
+  });
+
+  // ---------------- 事件流 ----------------
+  function connect(){
+    const es = new EventSource("/events");
+    es.onmessage = ev => {
+      connectedOnce = true;
+      clearTimeout(offlineTimer);
+      offlineTimer = null;
+      setOffline(false);
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e){ return; }
+      if (msg.type === "reset"){
+        streamEl.innerHTML = "";
+        buffered = [];
+        setStatus(msg.status || "等待中");
+        sessionNameEl.textContent = msg.session || "—";
+        setStats(msg.stats);
+        loadSessions(currentKeyword);
+        return;
+      }
+      if (msg.type === "event"){ pushEvent(msg); return; }
+      if (msg.type === "status"){ setStatus(msg.text); return; }
+      if (msg.type === "session"){ sessionNameEl.textContent = msg.text || "—"; return; }
+      if (msg.type === "stats"){ setStats(msg.stats); return; }
+    };
+    es.onerror = () => {
+      // 服务重启或连接中断时自动重连；一直连不上就亮提示条
+      es.close();
+      if (!connectedOnce && !offlineTimer){
+        offlineTimer = setTimeout(() => setOffline(true), 1500);
+      }
+      setTimeout(connect, 1200);
+    };
+  }
+
+  if (location.protocol === "file:"){
+    setOffline(true);          // 直接双击 html 打开，注定没有数据源
+  } else {
+    offlineTimer = setTimeout(() => { if (!connectedOnce) setOffline(true); }, 4000);
+  }
+  loadProjects();
+  loadSessions("");
+  connect();
+})();
+</script>
+</body>
+</html>

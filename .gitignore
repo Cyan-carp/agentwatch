@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 构建产物（python build.py 生成，不入库；发行版走 GitHub Releases）
+WorkBuddyMonitor.exe
+*.exe.old
+*.spec
+build/
+dist/
+
+# 本地工作日志（含本机路径与会话记录，不随仓库分发）
+.workbuddy/
+
+# 本机专用的 codebuddy CLI 端口包装，与监控器运行无关
+wb-codebuddy.cmd
+
+# 调试脚本与截图：临时文件统一以 _ 开头，用完即删
+_*.py
+_*.png
