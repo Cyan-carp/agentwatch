@@ -297,6 +297,9 @@ class UiUpdate:
     operation: str  # event | status | session | error
     event: StreamEvent | None = None
     text: str = ""
+    path: str = ""      # 会话切换时带上路径，前端据此高亮侧栏对应条目
+    agent: str = ""     # 来源 id
+    project: str = ""   # 项目键
 
 
 @dataclass(frozen=True, slots=True)
@@ -818,17 +821,345 @@ def list_sessions(project_dir: Path, limit: int = SESSION_MENU_LIMIT) -> list[tu
 
 
 # --------------------------------------------------------------------------
+# 多来源：不同智能体的会话各放一处，结构化时统一成「智能体 → 项目 → 会话」
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class AgentSource:
+    """一个智能体的会话目录。
+
+    kind 决定怎么解析：codebuddy 是一层项目目录 + 每会话一个 jsonl；codex 是
+    按日期分目录的 rollout-*.jsonl，项目要从文件头的 cwd 里读。
+    """
+
+    id: str
+    label: str
+    root: Path
+    kind: str = "codebuddy"
+
+    def exists(self) -> bool:
+        try:
+            return self.root.is_dir()
+        except OSError:
+            return False
+
+
+def discover_sources() -> list[AgentSource]:
+    """本机装了哪个就收哪个，目录不存在直接跳过。加新智能体在这里加一行。"""
+    home = Path.home()
+    candidates = [
+        AgentSource("workbuddy", "WorkBuddy CLI", home / ".codebuddy" / "projects", "codebuddy"),
+        AgentSource("codex", "Codex CLI", home / ".codex" / "sessions", "codex"),
+    ]
+    return [src for src in candidates if src.exists()]
+
+
+def _walk_jsonl(root: Path):
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        for name in filenames:
+            if name.lower().endswith(".jsonl"):
+                yield Path(dirpath) / name
+
+
+_CODEX_CWD: dict[str, str] = {}
+
+
+def _codex_cwd(path: Path) -> str:
+    """从 rollout 文件头读 cwd（会话属于哪个项目），按路径缓存。"""
+    key = str(path)
+    if key in _CODEX_CWD:
+        return _CODEX_CWD[key]
+    cwd = ""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(4):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    record = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if record.get("type") == "session_meta":
+                    payload = record.get("payload")
+                    value = payload.get("cwd") if isinstance(payload, dict) else None
+                    if isinstance(value, str):
+                        cwd = value.strip()
+                    break
+    except OSError:
+        pass
+    _CODEX_CWD[key] = cwd
+    return cwd
+
+
+def kind_for_path(path: Path) -> str:
+    """按路径判断属于哪个智能体：.codex 下的是 codex rollout，其余按 codebuddy。"""
+    parts = {part.lower() for part in path.parts}
+    return "codex" if ".codex" in parts else "codebuddy"
+
+
+def session_label_for(path: Path, kind: str | None = None) -> str:
+    """会话显示名：项目名 · 短号。codex 的文件名是 rollout-<时间>-<uuid>。"""
+    kind = kind or kind_for_path(path)
+    if kind != "codex":
+        return session_label(path)
+    cwd = _codex_cwd(path)
+    project = Path(cwd).name if cwd else ""
+    short = path.stem[-8:]
+    return f"{project} · {short}" if project else short
+
+
+def project_of(source: AgentSource, path: Path) -> str:
+    """会话归属的项目键：codex 用 cwd 全路径，codebuddy 用目录名（slug）。"""
+    if source.kind == "codex":
+        return _codex_cwd(path)
+    return path.parent.name
+
+
+def iter_session_files(source: AgentSource):
+    if source.kind == "codex":
+        yield from _walk_jsonl(source.root)
+        return
+    try:
+        subdirs = [p for p in source.root.iterdir() if p.is_dir()]
+    except OSError:
+        return
+    for sub in subdirs:
+        try:
+            files = list(sub.glob("*.jsonl"))
+        except OSError:
+            continue
+        for path in files:
+            yield path
+
+
+def _project_title(source: AgentSource, key: str, files: list[Path]) -> str:
+    if source.kind == "codex":
+        return Path(key).name if key else "（未知项目）"
+    for path in files[:3]:
+        cwd = read_session_cwd(path)
+        if cwd:
+            return Path(cwd).name
+    return _friendly_dir_name(key)
+
+
+def list_source_projects(source: AgentSource) -> list[tuple[str, str, int]]:
+    """该智能体下的项目：[(项目键, 显示名, 会话数)]，按最近活动倒序。"""
+    buckets: dict[str, list[Path]] = {}
+    for path in iter_session_files(source):
+        key = project_of(source, path)
+        if not key:
+            key = "（未知项目）"
+        buckets.setdefault(key, []).append(path)
+
+    rows: list[tuple[float, str, str, int]] = []
+    for key, files in buckets.items():
+        newest = 0.0
+        for path in files:
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                continue
+        rows.append((newest, key, _project_title(source, key, files), len(files)))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    return [(key, title, count) for _n, key, title, count in rows]
+
+
+def read_preview_for(source: AgentSource, path: Path) -> str:
+    if source.kind != "codex":
+        return read_session_preview(path)
+    text = _codex_last_text(path, ("assistant",)) or _codex_last_text(path, ("user",))
+    return _clip_preview(text, 36) if text else "（无内容）"
+
+
+def _codex_last_text(path: Path, roles: tuple[str, ...], tail_bytes: int = 262_144) -> str:
+    """从文件尾部往前找最后一条指定角色的消息（只看末尾 256KB，够用且快）。"""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > tail_bytes:
+                fh.seek(size - tail_bytes)
+                fh.readline()               # 丢掉可能被截断的半行
+            data = fh.read()
+    except OSError:
+        return ""
+    for line in reversed(data.decode("utf-8", "replace").splitlines()):
+        if not line.startswith("{"):
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "message":
+            continue
+        if payload.get("role") not in roles:
+            continue
+        body = _codex_blocks(payload.get("content")).strip()
+        if body:
+            return body
+    return ""
+
+
+def list_source_sessions(
+    source: AgentSource, project_key: str, limit: int = SESSION_MENU_LIMIT
+) -> list[tuple[Path, float, int, str]]:
+    """某项目下最近若干会话：[(路径, 修改时间, 字节数, 摘要)]，新→旧。"""
+    rows: list[tuple[float, Path, int]] = []
+    for path in iter_session_files(source):
+        if project_of(source, path) != project_key:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rows.append((stat.st_mtime, path, stat.st_size))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    return [
+        (path, mtime, size, read_preview_for(source, path))
+        for mtime, path, size in rows[:limit]
+    ]
+
+
+def _iso_to_ms(value: object) -> int | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        return int(datetime.fromisoformat(text).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _codex_blocks(blocks: object) -> str:
+    """codex 的内容块：[{type: "output_text"|"input_text", text: "..."}]"""
+    if isinstance(blocks, str):
+        return blocks
+    if not isinstance(blocks, list):
+        return ""
+    parts: list[str] = []
+    for block in blocks:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _codex_exec_detail(raw: str) -> str:
+    """codex 的自定义工具调用是一段 JS，抓一下里面最像命令的那一句。"""
+    match = re.search(r'cmd\s*:\s*(["\'])(.+?)\1', raw, re.S)
+    if match:
+        return match.group(2).strip()
+    match = re.search(r'await tools\.(\w+)\(', raw)
+    if match:
+        return f"tools.{match.group(1)}"
+    return ""
+
+
+def extract_codex(record: dict) -> StreamEvent | None:
+    """codex rollout 记录 → 可显示事件。无关类型返回 None。"""
+    if record.get("type") != "response_item":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("type")
+    ts = _iso_to_ms(record.get("timestamp"))
+
+    if kind == "message":
+        role = payload.get("role")
+        body = _codex_blocks(payload.get("content")).strip()
+        if not body:
+            return None
+        if role == "user":
+            # 平台注入的规则/工具说明不是用户自己打的，别当成任务显示
+            if body.startswith("# AGENTS.md instructions") or body.startswith("<"):
+                return None
+            return StreamEvent("task", clip_text(prettify_message(body), MAX_MESSAGE_CHARS), ts)
+        if role == "assistant":
+            return StreamEvent("reply", clip_text(prettify_message(body), MAX_MESSAGE_CHARS), ts)
+        return None
+
+    if kind == "reasoning":
+        # codex 的推理正文多半是加密的，只有 summary 偶尔有可读内容
+        body = (_codex_blocks(payload.get("summary")) or _codex_blocks(payload.get("content"))).strip()
+        if not body:
+            return None
+        return StreamEvent("think", clip_text(prettify_think(body), MAX_REASONING_CHARS), ts)
+
+    if kind in ("custom_tool_call", "function_call"):
+        name = str(payload.get("name") or "?")
+        raw = payload.get("input") if kind == "custom_tool_call" else payload.get("arguments")
+        label, detail = prettify_call(name, raw)
+        if isinstance(raw, str):
+            detail = _codex_exec_detail(raw) or detail
+        return StreamEvent("call", detail or name, ts, label)
+
+    if kind in ("custom_tool_call_output", "function_call_output"):
+        body = _codex_blocks(payload.get("output")).strip()
+        status = str(payload.get("status") or "completed")
+        label, text = prettify_result(str(payload.get("name") or "工具"), status, body)
+        return StreamEvent(
+            "result_ok" if status == "completed" else "result_error",
+            clip_text(text, MAX_RESULT_CHARS),
+            ts,
+            label,
+        )
+    return None
+
+
+def extract_for(kind: str, record: dict) -> StreamEvent | None:
+    """按来源类型选解析器。"""
+    if kind == "codex":
+        return extract_codex(record)
+    return extract_record(record)
+
+
+def find_latest_over(
+    sources: list[AgentSource], keyword: str
+) -> tuple[Path, int, int, AgentSource] | None:
+    """跨来源找最新的会话：(路径, 修改时间ns, 大小, 来源)。
+
+    排序优先级同 find_latest_session：项目匹配强度 > 有内容 > 修改时间。
+    """
+    kw = keyword.strip().casefold()
+    best: tuple[tuple[int, int, int, str], Path, int, AgentSource] | None = None
+    for source in sources:
+        if not source.exists():
+            continue
+        for path in iter_session_files(source):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            strength = _match_strength(project_of(source, path), kw)
+            if strength == 0:
+                continue
+            active = 1 if stat.st_size >= MIN_ACTIVE_SESSION_BYTES else 0
+            key = (strength, active, stat.st_mtime_ns, str(path).casefold())
+            if best is None or key > best[0]:
+                best = (key, path, stat.st_size, source)
+    if best is None:
+        return None
+    return best[1], best[0][2], best[2], best[3]
+
+
+# --------------------------------------------------------------------------
 # 后台监控线程
 # --------------------------------------------------------------------------
 class SessionWatcher(threading.Thread):
     def __init__(
         self,
-        root: Path,
+        root: "Path | list[AgentSource]",
         updates: "queue.Queue[UiUpdate]",
         commands: "queue.Queue[ControlCommand]",
         stop_event: threading.Event,
     ) -> None:
         super().__init__(name="session-watcher", daemon=True)
+        if isinstance(root, list):
+            self.sources = list(root)
+        else:
+            self.sources = [AgentSource("workbuddy", "WorkBuddy CLI", root, "codebuddy")]
         self.root = root
         self.updates = updates
         self.commands = commands
@@ -837,6 +1168,7 @@ class SessionWatcher(threading.Thread):
         self.pinned: Path | None = None
         self.state: TailState | None = None
         self.current_path: Path | None = None
+        self.current_kind = "codebuddy"
         self.wake = threading.Event()   # 收到命令时立即唤醒，切换不用等轮询
 
     # -- 主循环 ------------------------------------------------------------
@@ -921,7 +1253,7 @@ class SessionWatcher(threading.Thread):
                 )
             )
 
-        found = find_latest_session(self.root, self.keyword)
+        found = find_latest_over(self.sources, self.keyword)
         if found is None:
             if self.state is not None:
                 self.state = None
@@ -929,14 +1261,30 @@ class SessionWatcher(threading.Thread):
                 self._emit(UiUpdate("session", text="—"))
                 self._emit(UiUpdate("status", text="等待中"))
             return
-        path, _mtime_ns, size = found
+        path, _mtime_ns, size, source = found
         if self.current_path != path:
-            self._switch(path, size)
+            self._switch(path, size, source)
 
-    def _switch(self, path: Path, size: int) -> None:
+    def _source_for(self, path: Path) -> AgentSource | None:
+        text = str(path).lower()
+        for source in self.sources:
+            if text.startswith(str(source.root).lower()):
+                return source
+        return None
+
+    def _switch(self, path: Path, size: int, source: AgentSource | None = None) -> None:
+        if source is None:
+            source = self._source_for(path)
         self.current_path = path
-        label = session_label(path)
-        self._emit(UiUpdate("session", text=label))
+        # 解析方式跟着来源走：按路径猜只在标准目录下可靠，测试或自定义目录会误判
+        self.current_kind = source.kind if source is not None else kind_for_path(path)
+        project_key = project_of(source, path) if source is not None else ""
+        label = session_label_for(path, self.current_kind)
+        self._emit(UiUpdate(
+            "session", text=label, path=str(path),
+            agent=source.id if source is not None else "",
+            project=project_key,
+        ))
         self._emit(
             UiUpdate(
                 "event",
@@ -1054,7 +1402,7 @@ class SessionWatcher(threading.Thread):
             return None
         if not isinstance(obj, dict):
             return None
-        return extract_record(obj)
+        return extract_for(self.current_kind, obj)
 
     # -- 队列 --------------------------------------------------------------
     def _emit(self, update: UiUpdate) -> None:

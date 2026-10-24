@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WorkBuddy Monitor</title>
+<title>AgentWatch</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%23121823'/%3E%3Cg fill='%2358a6ff'%3E%3Crect x='19.6' y='21.1' width='5.6' height='21.8' rx='2.8'/%3E%3Crect x='29.2' y='15.4' width='5.6' height='33.2' rx='2.8'/%3E%3Crect x='38.8' y='19.2' width='5.6' height='25.6' rx='2.8'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root{
@@ -43,27 +43,54 @@
 
   /* ---------------- 侧栏 ---------------- */
   .side{
-    width:264px;flex:0 0 264px;background:var(--side);
+    width:288px;flex:0 0 288px;background:var(--side);
     display:flex;flex-direction:column;border-right:1px solid var(--line);
   }
-  .brand{display:flex;align-items:center;gap:11px;padding:18px 16px 14px}
-  .brand svg{flex:0 0 auto}
-  .brand .name{font-size:15px;font-weight:600;letter-spacing:.2px}
-  .brand .sub{font-size:12px;color:var(--muted);margin-top:1px}
+  .brand{padding:18px 16px 12px}
+  .brand .name{font-size:15px;font-weight:600;letter-spacing:.3px}
+  .brand .sub{font-size:12px;color:var(--muted);margin-top:2px}
 
-  .field{padding:0 16px 14px}
-  .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:6px}
+  .field{padding:0 12px 10px;position:relative}
+  .combo{position:relative}
   .kw{
     width:100%;background:#12161c;border:1px solid #20262f;border-radius:7px;
-    color:var(--fg);font-family:var(--font);font-size:13px;padding:7px 10px;
+    color:var(--fg);font-family:var(--font);font-size:13px;padding:7px 30px 7px 10px;
     outline:none;transition:border-color .15s;
   }
   .kw:focus{border-color:#2f4a6b}
   .kw::placeholder{color:#4d545e}
+  .combo .caret{
+    position:absolute;right:6px;top:50%;transform:translateY(-50%);
+    background:none;border:0;color:#5b636e;cursor:pointer;font-size:11px;
+    padding:4px 6px;line-height:1;
+  }
+  .combo .caret:hover{color:#c3cad3}
+
+  /* 项目候选：与树一致的分组面板，不用系统 datalist */
+  .menu{
+    position:absolute;left:12px;right:12px;top:100%;z-index:40;margin-top:4px;
+    max-height:min(52vh,420px);overflow-y:auto;
+    background:#11151b;border:1px solid #232a34;border-radius:9px;
+    box-shadow:0 14px 34px rgba(0,0,0,.55);padding:5px;
+  }
+  .menu[hidden]{display:none}
+  .menu .grp{
+    font-size:10.5px;color:#5f6671;letter-spacing:.4px;
+    padding:7px 9px 4px;text-transform:uppercase;
+  }
+  .menu .opt{
+    display:flex;align-items:center;gap:8px;
+    padding:6px 9px;border-radius:6px;cursor:pointer;font-size:12.5px;color:#c3cad3;
+  }
+  .menu .opt:hover{background:#182029}
+  .menu .opt.on{background:#16202c;color:#e6edf5}
+  .menu .opt .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .menu .opt .c{font-family:var(--mono);font-size:10.5px;color:#5f6671}
+  .menu .empty{padding:10px;font-size:12px;color:#5f6671}
 
   .sec-head{
     display:flex;align-items:center;justify-content:space-between;
-    padding:4px 16px 8px;font-size:12px;color:var(--dim);
+    padding:6px 16px 8px;font-size:12px;color:var(--dim);
   }
   .sec-head button{
     background:none;border:0;color:#5b636e;cursor:pointer;font-size:14px;
@@ -71,27 +98,45 @@
   }
   .sec-head button:hover{color:var(--fg)}
 
-  .sessions{flex:1;overflow-y:auto;padding:0 8px 8px}
-  .srow{
-    padding:7px 8px;border-radius:7px;cursor:pointer;
-    transition:background .12s;
+  /* 历史会话：智能体 › 项目 › 会话 三级树 */
+  .tree{flex:1;overflow-y:auto;padding:0 8px 16px;font-size:13px}
+  .tree::-webkit-scrollbar{width:8px}
+  .tree::-webkit-scrollbar-thumb{background:#1e242d;border-radius:4px}
+
+  .node > .row{
+    display:flex;align-items:center;gap:7px;
+    padding:6px 8px;border-radius:6px;cursor:pointer;user-select:none;
   }
-  .srow:hover{background:#12171e}
-  .srow.active{background:#16202c}
-  .srow .meta{
-    display:flex;justify-content:space-between;
-    font-family:var(--mono);font-size:11px;color:#5f6671;
+  .node > .row:hover{background:#12171e}
+  .node > .row .tw{
+    width:10px;flex:0 0 10px;color:#5b636e;font-size:9px;line-height:1;
+    transition:transform .12s;display:inline-block;
   }
-  .srow .prev{
-    font-size:12.5px;color:#9aa1ab;margin-top:2px;
+  .node.open > .row .tw{transform:rotate(90deg)}
+  .node > .row .folder{flex:0 0 auto;color:#7c8794;display:inline-flex}
+  .node.agent > .row .label{font-size:12.5px;color:#dfe4ea;font-weight:600}
+  .node.proj  > .row .label{font-size:12.5px;color:#c3cad3}
+  .node > .row .count{
+    margin-left:auto;font-family:var(--mono);font-size:10.5px;color:#5f6671;
+  }
+  .node > .kids{display:none}
+  .node.open > .kids{display:block}
+  .node.proj > .kids{padding-left:18px}
+  .node.agent > .kids{padding-left:6px}
+
+  .sitem{
+    display:flex;align-items:baseline;gap:8px;
+    padding:6px 8px 6px 24px;border-radius:6px;cursor:pointer;
+  }
+  .sitem:hover{background:#12171e}
+  .sitem.active{background:#16202c}
+  .sitem .stitle{
+    flex:1;min-width:0;font-size:12.5px;color:#b9c0ca;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   }
-  .srow.active .prev{color:#c3cad3}
-
-  .stats{
-    padding:10px 16px;border-top:1px solid var(--line);
-    font-family:var(--mono);font-size:11.5px;color:#5f6671;
-  }
+  .sitem.active .stitle{color:#e8eef6}
+  .sitem .stime{flex:0 0 auto;font-size:10.5px;color:#5f6671}
+  .tree .hint{padding:10px 10px;font-size:12px;color:#5f6671}
 
   /* ---------------- 主区 ---------------- */
   .main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
@@ -179,6 +224,24 @@
     padding:1px 5px;border-radius:4px;
     border:1px solid #222932;
   }
+  /* 表格：转成真表格，不再把 | 一行行摊开 */
+  .bd .tbl{overflow-x:auto;margin:8px 0;max-width:100%}
+  .bd table{
+    border-collapse:collapse;font-size:13px;
+    border:1px solid #232a34;border-radius:6px;overflow:hidden;
+  }
+  .bd th,.bd td{
+    border:1px solid #20262f;padding:5px 11px;
+    vertical-align:top;line-height:1.6;
+  }
+  .bd th{
+    background:#161c24;color:#cfd7e1;font-weight:600;white-space:nowrap;
+    text-align:left;
+  }
+  .bd td{color:#b6bdc7}
+  .bd tbody tr:nth-child(even) td{background:#11161c}
+  .bd td code{font-size:12px;white-space:nowrap}
+  .bd td .li,.bd td .ln{display:inline}
   .bd strong{color:#fff;font-weight:600}
   .bd .wl{color:#8ab4f8;border-bottom:1px dotted #3f587c;cursor:default}
   .bd .lnk{color:#8ab4f8}
@@ -223,44 +286,29 @@
 <body>
 <div id="offline" class="offline">
   <span>未连接到本地服务 ·</span>
-  <b>请双击 WorkBuddyMonitor.exe 启动</b>
+  <b>请双击 AgentWatch.exe 启动</b>
   <span>（单独打开这个网页文件没有数据源）</span>
 </div>
 <div class="app">
   <aside class="side">
     <div class="brand">
-      <svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true">
-        <defs>
-          <linearGradient id="bm" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#bae2ff"/>
-            <stop offset="1" stop-color="#4e8af6"/>
-          </linearGradient>
-        </defs>
-        <rect width="64" height="64" rx="15" fill="#121823"/>
-        <g fill="url(#bm)">
-          <rect x="19.6" y="21.1" width="5.6" height="21.8" rx="2.8"/>
-          <rect x="29.2" y="15.4" width="5.6" height="33.2" rx="2.8"/>
-          <rect x="38.8" y="19.2" width="5.6" height="25.6" rx="2.8"/>
-        </g>
-      </svg>
-      <div>
-        <div class="name">WorkBuddy</div>
-        <div class="sub">编码子 Agent · 实时</div>
-      </div>
+      <div class="name">AgentWatch</div>
+      <div class="sub">本机智能体会话 · 实时</div>
     </div>
 
     <div class="field">
-      <label for="kw">项目</label>
-      <input id="kw" class="kw" list="proj-list" placeholder="全部项目（可输入关键字）" autocomplete="off">
-      <datalist id="proj-list"></datalist>
+      <div class="combo">
+        <input id="kw" class="kw" placeholder="全部项目" autocomplete="off" spellcheck="false">
+        <button id="kw-toggle" class="caret" title="选择项目">▼</button>
+      </div>
+      <div id="kw-menu" class="menu" hidden></div>
     </div>
 
     <div class="sec-head">
-      <span>最近会话</span>
+      <span>历史会话</span>
       <button id="refresh" title="重新扫描">⟳</button>
     </div>
-    <div id="sessions" class="sessions"></div>
-    <div id="stats" class="stats">事件 0 · 工具 0 · 思考 0 · 回复 0</div>
+    <div id="tree" class="tree"></div>
   </aside>
 
   <main class="main">
@@ -304,15 +352,15 @@
   };
 
   const streamEl = document.getElementById("stream");
-  const sessionEl = document.getElementById("sessions");
-  const statsEl = document.getElementById("stats");
+  const treeEl = document.getElementById("tree");
   const statusEl = document.getElementById("status");
   const sessionNameEl = document.getElementById("session");
   const dotEl = document.getElementById("dot");
   const pauseBtn = document.getElementById("pause");
   const clearBtn = document.getElementById("clear");
   const kwInput = document.getElementById("kw");
-  const projList = document.getElementById("proj-list");
+  const kwMenu = document.getElementById("kw-menu");
+  const kwToggle = document.getElementById("kw-toggle");
   const refreshBtn = document.getElementById("refresh");
   const jumpBtn = document.getElementById("jump");
   const offlineEl = document.getElementById("offline");
@@ -324,7 +372,7 @@
   let es = null;                 // 当前 SSE 连接
   let lastSeq = 0;               // 已渲染到的最后一条事件序号
   let lastMsgAt = Date.now();    // 最后一次收到任何消息（含心跳）的时刻
-  let lastSessionsAt = 0;        // 上次刷新侧栏列表的时刻
+  let lastSessionsAt = 0;        // 上次刷新侧栏树的时刻
   let refreshTimer = null;
 
   function setOffline(on){
@@ -334,8 +382,6 @@
   let paused = false;
   let buffered = [];
   let stickBottom = true;
-  let currentKeyword = "";
-  let currentSessionPath = "";
 
   // ---------------- 文本清洗 ----------------
   function esc(s){
@@ -361,6 +407,48 @@
     });
     out = out.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_, t) => `<span class="lnk">${t}</span>`);
     return out;
+  }
+
+  // ---------------- 表格 ----------------
+  function isTableRow(t){
+    return t.length > 1 && t.startsWith("|");
+  }
+
+  function splitRow(t){
+    let body = t.trim();
+    if (body.startsWith("|")) body = body.slice(1);
+    if (body.endsWith("|")) body = body.slice(0, -1);
+    return body.split("|").map(cell => cell.trim());
+  }
+
+  function isTableSep(t){
+    if (!isTableRow(t)) return false;
+    const cells = splitRow(t);
+    return cells.length > 0 && cells.every(c => /^:?-{1,}:?$/.test(c.replace(/\s/g, "")));
+  }
+
+  function cellAlign(cell){
+    const c = cell.replace(/\s/g, "");
+    const left = c.startsWith(":"), right = c.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    if (left) return "left";
+    return "";
+  }
+
+  function buildTable(header, aligns, rows){
+    const attr = idx => (aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "");
+    let out = '<div class="tbl"><table><thead><tr>';
+    header.forEach((cell, idx) => { out += `<th${attr(idx)}>${inline(cell)}</th>`; });
+    out += "</tr></thead><tbody>";
+    rows.forEach(cells => {
+      out += "<tr>";
+      for (let idx = 0; idx < header.length; idx++){
+        out += `<td${attr(idx)}>${inline(cells[idx] || "")}</td>`;
+      }
+      out += "</tr>";
+    });
+    return out + "</tbody></table></div>";
   }
 
   function renderBody(text){
@@ -413,6 +501,20 @@
       }
       if (t.startsWith("⋯")){
         parts.push(`<div class="fold">${esc(t.replace(/^⋯\s*/, ""))}</div>`);
+        continue;
+      }
+      // 管道表格：| a | b | 加下一行的 |---|:--:| 才算数
+      if (isTableRow(t) && isTableSep((lines[i + 1] || "").trim())){
+        const header = splitRow(t);
+        const aligns = splitRow((lines[i + 1] || "").trim()).map(cellAlign);
+        const rows = [];
+        i += 2;
+        while (i < lines.length && isTableRow(lines[i].trim())){
+          rows.push(splitRow(lines[i].trim()));
+          i++;
+        }
+        i--;                       // 外层 for 还要 ++
+        parts.push(buildTable(header, aligns, rows));
         continue;
       }
       parts.push(`<div class="ln">${inline(raw)}</div>`);
@@ -485,68 +587,234 @@
     unpinBtn.hidden = !pinned;
   }
 
-  function setStats(s){
-    if (!s) return;
-    statsEl.textContent =
-      `事件 ${s.events||0} · 工具 ${s.call||0} · 思考 ${s.think||0} · 回复 ${s.reply||0}`;
+  // ---------------- 侧栏：智能体 › 项目 › 会话 ----------------
+  let treeData = [];                 // [{id,label,count,projects:[{key,name,count}]}]
+  const openNodes = new Set();       // "a:<agent>" / "p:<agent>|<project>"
+  const sessionsCache = new Map();   // "<agent>|<project>" -> [{path,ts,preview}]
+  let currentPath = "";
+  let currentKeyword = "";
+
+  const FOLDER = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 7.6A1.6 1.6 0 0 1 4.6 6h3.9l1.6 2.1h7.3A1.6 1.6 0 0 1 19 9.7v7.1A1.6 1.6 0 0 1 17.4 18.5H4.6A1.6 1.6 0 0 1 3 16.9z"/></svg>';
+
+  function el(tag, cls){
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    return node;
   }
 
-  // ---------------- 侧栏 ----------------
-  // 项目候选：让输入框能下拉选择，不用记住项目名怎么拼
-  async function loadProjects(){
-    try {
-      const resp = await fetch("/api/projects");
-      const data = await resp.json();
-      projList.innerHTML = "";
-      (data.projects || []).forEach(p => {
-        const opt = document.createElement("option");
-        opt.value = p.name;
-        opt.label = `${p.count} 个会话`;
-        projList.appendChild(opt);
-      });
-    } catch (e){ /* 服务未就绪时忽略 */ }
+  function relTime(ts){
+    if (!ts) return "";
+    const diff = Date.now() - ts;
+    if (diff < 60e3) return "刚刚";
+    if (diff < 3600e3) return Math.floor(diff / 60e3) + " 分钟前";
+    if (diff < 86400e3) return Math.floor(diff / 3600e3) + " 小时前";
+    if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + " 天前";
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
-  async function loadSessions(keyword){
-    currentKeyword = keyword || "";
-    const qs = currentKeyword ? `?keyword=${encodeURIComponent(currentKeyword)}` : "";
-    let data = {sessions: []};
-    try {
-      const resp = await fetch("/api/sessions" + qs);
-      data = await resp.json();
-    } catch (e){ /* 服务未就绪时静默 */ }
+  function nodeRow(label, count){
+    const row = el("div", "row");
+    row.innerHTML =
+      `<span class="tw">▸</span><span class="folder">${FOLDER}</span>` +
+      `<span class="label">${esc(label)}</span>` +
+      `<span class="count">${count || ""}</span>`;
+    return row;
+  }
 
-    // 输入的简称命中后，把输入框归一到真实项目名，避免下次又猜
-    if (data.matched && data.project && currentKeyword && kwInput.value.trim() !== data.project){
-      kwInput.value = data.project;
-    }
+  function matchesFilter(name){
+    if (!currentKeyword) return true;
+    return String(name).toLowerCase().includes(currentKeyword.toLowerCase());
+  }
 
-    sessionEl.innerHTML = "";
-    if (!data.sessions.length){
-      const empty = document.createElement("div");
-      empty.className = "srow";
-      const tip = (data.matched === false)
-        ? `没有匹配「${currentKeyword}」的项目`
-        : "这个项目还没有会话";
-      empty.innerHTML = `<div class="prev">${esc(tip)}</div>`;
-      sessionEl.appendChild(empty);
+  function renderTree(){
+    if (!treeData.length){
+      treeEl.innerHTML = '<div class="hint">没有找到会话目录</div>';
       return;
     }
-    data.sessions.forEach(s => {
-      const row = document.createElement("div");
-      row.className = "srow" + (s.path === currentSessionPath ? " active" : "");
-      row.innerHTML =
-        `<div class="meta"><span>${s.time}</span><span>${s.size}</span></div>` +
-        `<div class="prev">${esc(s.preview || "")}</div>`;
-      row.title = s.path;
-      row.onclick = () => {
-        currentSessionPath = s.path;
-        [...sessionEl.children].forEach(c => c.classList.remove("active"));
-        row.classList.add("active");
-        send({op: "pin_session", value: s.path, label: s.preview || ""});
+    treeEl.innerHTML = "";
+    let shown = 0;
+    treeData.forEach(agent => {
+      const projects = agent.projects.filter(p => matchesFilter(p.name));
+      if (!projects.length) return;
+      shown += 1;
+
+      const akey = "a:" + agent.id;
+      const an = el("div", "node agent" + (openNodes.has(akey) ? " open" : ""));
+      const arow = nodeRow(agent.label, projects.reduce((sum, p) => sum + p.count, 0));
+      arow.onclick = () => {
+        if (openNodes.has(akey)) openNodes.delete(akey);
+        else openNodes.add(akey);
+        renderTree();
       };
-      sessionEl.appendChild(row);
+      an.appendChild(arow);
+
+      const akids = el("div", "kids");
+      if (openNodes.has(akey)){
+        projects.forEach(proj => akids.appendChild(buildProject(agent, proj)));
+      }
+      an.appendChild(akids);
+      treeEl.appendChild(an);
     });
+    if (!shown){
+      treeEl.innerHTML = `<div class="hint">没有匹配「${esc(currentKeyword)}」的项目</div>`;
+    }
+    markActive();
+  }
+
+  function buildProject(agent, proj){
+    const pkey = "p:" + agent.id + "|" + proj.key;
+    const pn = el("div", "node proj" + (openNodes.has(pkey) ? " open" : ""));
+    const prow = nodeRow(proj.name, proj.count);
+    prow.onclick = () => {
+      if (openNodes.has(pkey)){
+        openNodes.delete(pkey);
+        renderTree();
+        return;
+      }
+      openNodes.add(pkey);
+      renderTree();
+      if (!sessionsCache.has(agent.id + "|" + proj.key))
+        loadProjectSessions(agent.id, proj.key);
+    };
+    pn.appendChild(prow);
+
+    const kids = el("div", "kids");
+    if (openNodes.has(pkey)){
+      const list = sessionsCache.get(agent.id + "|" + proj.key);
+      if (list === undefined || list === null){
+        kids.innerHTML = '<div class="hint">读取中…</div>';
+      } else if (!list.length){
+        kids.innerHTML = '<div class="hint">没有会话</div>';
+      } else {
+        list.forEach(item => kids.appendChild(buildSession(item)));
+      }
+    }
+    pn.appendChild(kids);
+    return pn;
+  }
+
+  function buildSession(item){
+    const row = el("div", "sitem");
+    row.dataset.path = item.path;
+    row.title = item.path;
+    row.innerHTML =
+      `<div class="stitle">${esc(item.preview || "")}</div>` +
+      `<div class="stime">${relTime(item.ts)}</div>`;
+    row.onclick = () => {
+      currentPath = item.path;
+      markActive();
+      send({op: "pin_session", value: item.path, label: item.preview || ""});
+    };
+    return row;
+  }
+
+  function markActive(){
+    [...treeEl.querySelectorAll(".sitem")].forEach(node => {
+      node.classList.toggle("active", node.dataset.path === currentPath);
+    });
+  }
+
+  async function loadProjectSessions(agentId, projectKey, silent){
+    const cacheKey = agentId + "|" + projectKey;
+    if (!silent){
+      sessionsCache.set(cacheKey, null);
+      renderTree();
+    }
+    try {
+      const qs = `?agent=${encodeURIComponent(agentId)}&project=${encodeURIComponent(projectKey)}`;
+      const data = await (await fetch("/api/sessions" + qs, {cache: "no-store"})).json();
+      sessionsCache.set(cacheKey, data.sessions || []);
+    } catch (e){
+      sessionsCache.set(cacheKey, sessionsCache.get(cacheKey) || []);
+    }
+    renderTree();
+  }
+
+  async function loadTree(){
+    let data = {agents: []};
+    try {
+      data = await (await fetch("/api/tree", {cache: "no-store"})).json();
+    } catch (e){ /* 服务未就绪时忽略 */ }
+    treeData = data.agents || [];
+    if (treeData.length && !openNodes.size) openNodes.add("a:" + treeData[0].id);
+
+    // 已展开的项目静默刷新，新会话会自己冒出来，不会闪「读取中」
+    [...openNodes].filter(k => k.startsWith("p:")).forEach(key => {
+      const cut = key.slice(2).indexOf("|");
+      const bare = key.slice(2);
+      loadProjectSessions(bare.slice(0, cut), bare.slice(cut + 1), true);
+    });
+
+    renderTree();
+    renderMenu();
+  }
+
+  // 当前正在跟随的会话：自动展开它所在的项目并高亮
+  function applyCurrent(agentId, projectKey, path){
+    if (!path) return;
+    currentPath = path;
+    if (agentId && projectKey){
+      openNodes.add("a:" + agentId);
+      openNodes.add("p:" + agentId + "|" + projectKey);
+      const cacheKey = agentId + "|" + projectKey;
+      if (!sessionsCache.has(cacheKey)) loadProjectSessions(agentId, projectKey);
+      else markActive();
+    } else {
+      markActive();
+    }
+  }
+
+  // ---------------- 项目下拉 ----------------
+  function renderMenu(){
+    const kw = kwInput.value.trim().toLowerCase();
+    kwMenu.innerHTML = "";
+
+    const all = el("div", "opt" + (currentKeyword ? "" : " on"));
+    all.innerHTML = '<span class="n">全部项目</span>';
+    all.onclick = () => { setKeyword(""); closeMenu(); };
+    kwMenu.appendChild(all);
+
+    let count = 0;
+    treeData.forEach(agent => {
+      const items = agent.projects.filter(p => !kw || p.name.toLowerCase().includes(kw));
+      if (!items.length) return;
+      const grp = el("div", "grp");
+      grp.textContent = agent.label;
+      kwMenu.appendChild(grp);
+      items.forEach(proj => {
+        count += 1;
+        const opt = el("div", "opt" + (proj.name === currentKeyword ? " on" : ""));
+        opt.innerHTML =
+          `<span class="n">${esc(proj.name)}</span><span class="c">${proj.count}</span>`;
+        opt.onclick = () => {
+          setKeyword(proj.name);
+          openNodes.add("a:" + agent.id);
+          openNodes.add("p:" + agent.id + "|" + proj.key);
+          renderTree();
+          if (!sessionsCache.has(agent.id + "|" + proj.key))
+            loadProjectSessions(agent.id, proj.key);
+          closeMenu();
+        };
+        kwMenu.appendChild(opt);
+      });
+    });
+    if (!count){
+      const empty = el("div", "empty");
+      empty.textContent = "没有匹配的项目";
+      kwMenu.appendChild(empty);
+    }
+  }
+
+  function openMenu(){ kwMenu.hidden = false; renderMenu(); }
+  function closeMenu(){ kwMenu.hidden = true; }
+
+  function setKeyword(text){
+    currentKeyword = text;
+    kwInput.value = text;
+    send({op: "set_keyword", value: text, label: text || "全部项目"});
+    renderTree();
+    renderMenu();
   }
 
   async function send(payload){
@@ -559,15 +827,29 @@
     } catch (e){ /* 忽略 */ }
   }
 
+  kwToggle.onclick = (e) => {
+    e.stopPropagation();
+    if (kwMenu.hidden) openMenu(); else closeMenu();
+  };
+  kwInput.addEventListener("focus", () => openMenu());
+  kwInput.addEventListener("input", () => renderMenu());
   kwInput.addEventListener("keydown", e => {
+    if (e.key === "Escape"){ closeMenu(); kwInput.blur(); return; }
     if (e.key !== "Enter") return;
-    const value = kwInput.value.trim();
-    send({op: "set_keyword", value, label: value || "全部项目"});
-    loadSessions(value);
+    setKeyword(kwInput.value.trim());
+    closeMenu();
     kwInput.blur();
   });
+  document.addEventListener("click", e => {
+    if (kwMenu.hidden) return;
+    if (kwMenu.contains(e.target) || e.target === kwInput) return;
+    closeMenu();
+  });
 
-  refreshBtn.onclick = () => { loadProjects(); loadSessions(currentKeyword); };
+  refreshBtn.onclick = () => {
+    sessionsCache.clear();
+    loadTree();
+  };
 
   // ---------------- 交互 ----------------
   pauseBtn.onclick = () => {
@@ -611,7 +893,7 @@
     (data.events || []).forEach(pushEvent);
     if (data.status) setStatus(data.status);
     if (typeof data.session === "string") sessionNameEl.textContent = data.session || "—";
-    setStats(data.stats);
+    if (data.path) applyCurrent(data.agent || "", data.project || "", data.path);
     if (data.dropped && typeof data.seq === "number" && data.seq > lastSeq){
       lastSeq = data.seq;      // 断档太久，服务端只给最近一批，接受它别原地打转
     }
@@ -640,7 +922,7 @@
     // 侧栏跟着刷，新会话会自己冒出来，不用手点 ⟳
     if (Date.now() - lastSessionsAt > 15000){
       lastSessionsAt = Date.now();
-      loadSessions(currentKeyword);
+      loadTree();
     }
   }
 
@@ -667,15 +949,19 @@
         lastSeq = 0;                  // 回放的事件序号比 reset 小，得从 0 重新累积
         setStatus(msg.status || "等待中");
         sessionNameEl.textContent = msg.session || "—";
-        setStats(msg.stats);
         lastSessionsAt = Date.now();
-        loadSessions(currentKeyword);
+        loadTree();
+        if (msg.path) applyCurrent(msg.agent || "", msg.project || "", msg.path);
         return;
       }
       if (msg.type === "event"){ pushEvent(msg); return; }
       if (msg.type === "status"){ setStatus(msg.text); return; }
-      if (msg.type === "session"){ sessionNameEl.textContent = msg.text || "—"; return; }
-      if (msg.type === "stats"){ setStats(msg.stats); return; }
+      if (msg.type === "session"){
+        sessionNameEl.textContent = msg.text || "—";
+        applyCurrent(msg.agent || "", msg.project || "", msg.path || "");
+        return;
+      }
+      if (msg.type === "stats"){ return; }
     };
     sock.onerror = () => {
       if (es !== sock) return;        // 已经被新连接替换，别重复重连
@@ -721,12 +1007,8 @@
   // 取消固定：回到自动跟随最新会话
   unpinBtn.onclick = () => {
     unpinBtn.hidden = true;
-    kwInput.value = "";
-    currentKeyword = "";
-    currentSessionPath = "";
+    setKeyword("");
     setStatus("跟随中");
-    send({op: "set_keyword", value: "", label: "全部项目"});
-    loadSessions("");
   };
 
   document.addEventListener("visibilitychange", () => {
@@ -740,8 +1022,7 @@
   } else {
     offlineTimer = setTimeout(() => { if (!connectedOnce) setOffline(true); }, 4000);
   }
-  loadProjects();
-  loadSessions("");
+  loadTree();
   connect();
 })();
 </script>

@@ -1,29 +1,33 @@
-# AGENTS.md · WorkBuddy Monitor
+# AGENTS.md · AgentWatch
 
 给任何接手的智能体看的交接单（Codex / WorkBuddy / 其他）。先读这一份，细节再看 `README.md`。
 
-- 远程仓库：<https://github.com/Cyan-carp/wb-monitor>（公开，MIT）
-- 发行版：`WorkBuddyMonitor.exe` 挂在 [Releases](https://github.com/Cyan-carp/wb-monitor/releases)，不入库
+- 远程仓库：<https://github.com/Cyan-carp/agentwatch>（公开，MIT）
+- 发行版：`AgentWatch.exe` 挂在 [Releases](https://github.com/Cyan-carp/agentwatch/releases)，不入库
 - `.workbuddy/memory/` 与 `wb-codebuddy.cmd` 是**本地文件**，已写进 `.gitignore`，不要提交
 
 ## 这是什么
 
-一个 Windows 桌面小工具：只读地跟随 codebuddy（WorkBuddy）的会话 JSONL，把「任务 / 思考 / 工具调用 / 回复」实时渲染成时间轴，用来盯另一个智能体在干什么。界面是「Python 本地 HTTP 服务 + Edge/Chrome 的 `--app` 独立窗口」，不是 Tk。
+一个 Windows 桌面小工具：只读地跟随本机各家智能体的会话文件，把「任务 / 思考 / 工具调用 / 回复」实时渲染成时间轴，用来盯另一个智能体在干什么。界面是「Python 本地 HTTP 服务 + Edge/Chrome 的 `--app` 独立窗口」，不是 Tk。
 
-- 数据源（只读）：`%USERPROFILE%\.codebuddy\projects\<项目slug>\*.jsonl`
-- 成品：`WorkBuddyMonitor.exe`（PyInstaller onefile，12 MB）
+侧栏是**智能体 › 项目 › 会话**三级树，来源可扩展（见 `discover_sources()`）。
+
+- 数据源（只读，目录不存在自动跳过）：
+  - WorkBuddy CLI：`%USERPROFILE%\.codebuddy\projects\<项目slug>\*.jsonl`
+  - Codex CLI：`%USERPROFILE%\.codex\sessions\<年>\<月>\<日>\rollout-*.jsonl`
+- 成品：`AgentWatch.exe`（PyInstaller onefile，12 MB）
 - 依赖：仅标准库。`make-icon.py` 另外需要 Pillow，但它只在改图标时用
 
 ## 三条硬约束
 
 1. **对被监控目录只读**。任何情况下不往 `%USERPROFILE%\.codebuddy\projects` 里写东西，不改被监控项目的文件。
-2. **`WorkBuddyMonitor.exe` 是构建产物，不入库**（`.gitignore` 已排除）。要新版本就重新打包，见下文。
+2. **`AgentWatch.exe` 是构建产物，不入库**（`.gitignore` 已排除）。要新版本就重新打包，见下文。
 3. **改了 `wbm_web.py` 或 `web/index.html` 必须重新打包**。双击 exe 跑的是打包进去的那份，不会读磁盘上的源码；不重新打包就会以为改动「没生效」。
 
 ## 怎么跑
 
 ```powershell
-# 用户视角：双击 WorkBuddyMonitor.exe
+# 用户视角：双击 AgentWatch.exe
 
 # 开发：直接跑源码（会拉起独立窗口）
 python wbm_web.py
@@ -41,12 +45,12 @@ python wbm_web.py --selftest
 | --- | --- |
 | `wbm_web.py` | **入口**。`ThreadingHTTPServer` + SSE 推流 + 拉起浏览器 + 生命周期管理（窗口关掉就退出） |
 | `wb_gui.py` | **数据层**（原 Tk 版）。会话发现、增量读 JSONL、事件提炼与美化。`MonitorApp(tk.Tk)` 仍保留，可 `python wb_gui.py` 独立运行旧版 |
-| `web/index.html` | **前端**。原生 JS + 内联 SVG 图标，无构建步骤、无 CDN |
+| `web/index.html` | **前端**。原生 JS，无构建步骤、无 CDN；侧栏树、项目下拉、markdown（含表格）都在这里 |
 
 运行链路：`SessionWatcher`（线程，tail JSONL）→ `UiUpdate` → `wbm_web` 的泵线程转成 SSE JSON → 前端 `EventSource`。
 新客户端接入先收一条 `reset`（状态/会话/统计），再回放最近 400 条事件。
 
-接口：`GET /`、`GET /events`（SSE，5 秒 JSON 心跳）、`GET /api/state?after=N`（轮询增量）、`GET /api/projects`、`GET /api/sessions?keyword=`、`POST /api/command`（`set_keyword` / `pin_session` / `pause`）。
+接口：`GET /`、`GET /events`（SSE，5 秒 JSON 心跳）、`GET /api/state?after=N`（轮询增量，带 `agent`/`project`/`path`）、`GET /api/tree`（智能体 › 项目）、`GET /api/sessions?agent=&project=`、`GET /api/projects`（兼容）、`POST /api/command`（`set_keyword` / `pin_session` / `pause` / `set_interval`）。
 
 事件带单调递增 `seq`，前端按 `seq` 去重：SSE 与轮询同时送达只渲染一次。`_supervise` 线程每 5 秒检查 pump / watcher，任一退出就重启。
 
@@ -60,8 +64,10 @@ python wbm_web.py --selftest
 | 回放条数、心跳频率 | `wbm_web.py` 的 `RECENT_LIMIT` / 泵线程 |
 | 定时刷新间隔、轮询补断档 | `web/index.html` 的 `tick()` 与 `.ival` 下拉（默认 5 秒，选择存 localStorage） |
 | 事件提炼、工具摘要、折叠行数 | `wb_gui.py` 的 `prettify_*` / `extract_record` |
-| 会话发现与排序规则 | `wb_gui.py` 的 `list_projects` / `list_sessions` |
-| 图标 | `make-icon.py`（比例在文件开头）**且**同步 `web/index.html` 的 favicon 与侧栏 SVG |
+| 会话发现与排序规则 | `wb_gui.py` 的 `discover_sources` / `list_source_projects` / `list_source_sessions` |
+| 新增一个智能体来源 | `wb_gui.py` 加 `AgentSource` + 一个 `extract_xxx()` 解析器，在 `extract_for()` 里分派 |
+| 侧栏树 / 项目下拉 / 表格渲染 | `web/index.html` 的 `renderTree()` / `renderMenu()` / `buildTable()` |
+| 图标 | `make-icon.py`（比例在文件开头）**且**同步 `web/index.html` 的 favicon。界面里已不放图标，只保留 exe 图标 |
 
 ## 打包
 
@@ -76,7 +82,7 @@ python build.py --keep     # 只构建到 dist/，不动根目录
 等价的手动命令：
 
 ```powershell
-python -m PyInstaller --noconfirm --clean --onefile --noconsole --noupx --name WorkBuddyMonitor --manifest dpi.manifest --icon workbuddy.ico --add-data "web\index.html;web" --add-data "workbuddy.ico;." --distpath . --workpath build --specpath build wbm_web.py
+python -m PyInstaller --noconfirm --clean --onefile --noconsole --noupx --name AgentWatch --manifest dpi.manifest --icon workbuddy.ico --add-data "web\index.html;web" --add-data "workbuddy.ico;." --distpath . --workpath build --specpath build wbm_web.py
 ```
 
 三个参数不能省：
@@ -96,7 +102,7 @@ python -m PyInstaller --noconfirm --clean --onefile --noconsole --noupx --name W
 | bash 里 `--workpath "%TEMP%\x"` 不展开 | 会在项目目录建一个字面名为 `%TEMP%` 的文件夹。用绝对路径 |
 | exe 正在运行，打包覆盖报 `safe-delete ... trash aborted` | `DeleteFileW` 也失败；只能 `MoveFileW` 改名腾位，重启后再删旧文件 |
 | PyInstaller onefile 父进程拿不到窗口 | `Popen` 的 pid 是 bootloader，窗口属于子进程。按「窗口句柄快照取差集」找 |
-| 打包版报「拒绝连接」 | 看 `%LOCALAPPDATA%\WorkBuddyMonitor\startup.log`（每次启动重写） |
+| 打包版报「拒绝连接」 | 看 `%LOCALAPPDATA%\AgentWatch\startup.log`（每次启动重写） |
 | 关窗后十几秒才退 | 正常。SSE 心跳 5 秒，靠断连判定，不是秒退 |
 | `wmic` 在本机安全策略黑名单里 | 用 `Get-CimInstance Win32_Process` 替代 |
 | 两个实例抢同一个端口，窗口连到旧的、改了看着没生效 | **Windows 的 `SO_REUSEADDR` 含义是「允许绑到别人正在监听的端口」**。`_port_free()` 先 `connect_ex` 探活，再不带 REUSEADDR 地 bind；`_Server.allow_reuse_address = False` |
@@ -105,12 +111,15 @@ python -m PyInstaller --noconfirm --clean --onefile --noconsole --noupx --name W
 | pump 线程没包 try/except | 单条事件抛异常就整条线程死掉：心跳照发、界面永不更新，日志里也看不出。要包一层 + `_supervise` 定时重启 |
 | 前端用 `document.hidden` 跳过轮询 | Chrome 的窗口遮挡检测会把被盖住/最小化的窗口判为 hidden，轮询静默停掉，又变成「看着不更新」。本机接口，别做这个优化 |
 | 用户说「没有实时更新」 | 先看状态是不是「已固定」——点过侧栏历史会话就会固定住，且原来自动切换被关掉。UI 必须有显眼的「取消固定」 |
+| markdown 表格被逐行摊开 | `renderBody` 原来不认管道表格。现在靠「本行以 `|` 开头 + 下一行是 `|---|`」判定，缺一不可；`th` 浏览器默认居中，要显式 `text-align:left` |
+| codex 会话解析不出来 | 记录外层是 `type=response_item`，真正的类型在 `payload.type`；用户提示前面常混入 `# AGENTS.md instructions` / `<...>` 的注入块，要过滤 |
+| 按路径猜来源会误判 | 只看 `.codex` 这一段，测试/自定义目录会漏。优先用 `AgentSource.kind`（`SessionWatcher._source_for`），路径判断只作兜底 |
 
 ## 排查
 
-- 启动日志：`%LOCALAPPDATA%\WorkBuddyMonitor\startup.log` —— 监听端口、浏览器 pid、前端是否连上、退出原因
-- 界面设置：`%LOCALAPPDATA%\WorkBuddyMonitor\settings.json` —— 目前只存 `refresh_ms`（刷新间隔）
-- 浏览器 profile：`%LOCALAPPDATA%\WorkBuddyMonitor\webview\run-<pid>\`（超过 1 小时的残留会自动清理）
+- 启动日志：`%LOCALAPPDATA%\AgentWatch\startup.log` —— 监听端口、浏览器 pid、前端是否连上、退出原因
+- 界面设置：`%LOCALAPPDATA%\AgentWatch\settings.json` —— 目前只存 `refresh_ms`（刷新间隔）
+- 浏览器 profile：`%LOCALAPPDATA%\AgentWatch\webview\run-<pid>\`（超过 1 小时的残留会自动清理）
 - 页面顶部出现「未连接到本地服务」= 服务没跑。`file://` 直接打开 html 也会这样，属预期
 - 冻结后挂起：`python wbm_web.py --serve-only` 后用浏览器访问 `http://127.0.0.1:8765/`
 

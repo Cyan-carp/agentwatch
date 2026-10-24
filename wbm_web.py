@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""WorkBuddy Monitor — 网页版。
+"""AgentWatch — 网页版。
 
 用 Chromium 的 app 模式承载界面：字体走 DirectWrite 渲染，中文不再经过
 GDI 的字体链接兜底，观感与浏览器里的对话界面一致；同时窗口没有地址栏和
@@ -9,7 +9,7 @@ GDI 的字体链接兜底，观感与浏览器里的对话界面一致；同时�
 数据层复用 wb_gui 的会话发现与解析（SessionWatcher / list_projects 等），
 这里只负责：HTTP 服务、SSE 推送、以及拉起浏览器窗口。
 
-用法: 双击 WorkBuddyMonitor.exe；开发时 python wbm_web.py
+用法: 双击 AgentWatch.exe；开发时 python wbm_web.py
 自检: python wbm_web.py --selftest
 """
 from __future__ import annotations
@@ -32,15 +32,17 @@ from wb_gui import (
     ControlCommand,
     SessionWatcher,
     UiUpdate,
+    discover_sources,
     format_mtime,
     human_size,
-    list_projects,
-    list_sessions,
+    list_source_projects,
+    list_source_sessions,
     match_project,
     resource_path,
 )
 
-APP_TITLE = "WorkBuddy Monitor"
+APP_TITLE = "AgentWatch"
+APP_DIR = "AgentWatch"        # 配置与日志目录名，跟着 exe 名走
 PORT_START = 8765
 PORT_TRIES = 24
 RECENT_LIMIT = 400          # 新客户端接入时回放多少条
@@ -71,7 +73,8 @@ class Hub:
         self._lock = threading.Lock()
         self._recent: list[dict] = []
         self._seq = 0                       # 事件序号，供前端补拿断档
-        self.snapshot = {"status": "等待中", "session": "—", "stats": self.blank_stats()}
+        self.snapshot = {"status": "等待中", "session": "—", "path": "",
+                         "agent": "", "project": "", "stats": self.blank_stats()}
 
     @staticmethod
     def blank_stats() -> dict:
@@ -130,6 +133,10 @@ class Hub:
                     del self._recent[: len(self._recent) - RECENT_LIMIT]
             elif msg.get("type") in ("status", "session"):
                 self.snapshot[msg["type"]] = msg.get("text", "")
+                if msg.get("type") == "session":
+                    for field in ("path", "agent", "project"):
+                        if msg.get(field):
+                            self.snapshot[field] = msg[field]
             elif msg.get("type") == "stats":
                 self.snapshot["stats"] = msg.get("stats", self.blank_stats())
             targets = list(self._clients)
@@ -144,7 +151,7 @@ class Hub:
 # 请求处理
 # --------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
-    server_version = "WorkBuddyMonitor"
+    server_version = "AgentWatch"
     hub: Hub = None          # 由 serve() 注入
     app: "MonitorServer" = None
 
@@ -177,6 +184,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._serve_events()
             elif path == "/api/projects":
                 self._serve_projects()
+            elif path == "/api/tree":
+                self._serve_tree()
             elif path == "/api/sessions":
                 self._serve_sessions()
             elif path == "/api/state":
@@ -241,55 +250,86 @@ class Handler(BaseHTTPRequestHandler):
         data["refresh_ms"] = getattr(self.app, "refresh_ms", DEFAULT_REFRESH_MS)
         self._json(data)
 
+    def _serve_tree(self) -> None:
+        """侧栏用：智能体 → 项目 → 会话数。"""
+        agents = []
+        for src in getattr(self.app, "sources", []):
+            projects = [
+                {"key": key, "name": name, "count": count}
+                for key, name, count in list_source_projects(src)
+            ]
+            agents.append({
+                "id": src.id,
+                "label": src.label,
+                "count": sum(p["count"] for p in projects),
+                "projects": projects,
+            })
+        self._json({"agents": agents})
+
     def _serve_projects(self) -> None:
         items = []
-        for display, keyword, count, _dir in list_projects(ROOT):
-            items.append({"name": display, "keyword": keyword, "count": count})
+        for src in getattr(self.app, "sources", []):
+            for key, name, count in list_source_projects(src):
+                items.append({"agent": src.id, "key": key, "name": name, "count": count})
         self._json({"projects": items})
 
-    @staticmethod
-    def _resolve_project(keyword: str) -> tuple[Path, str] | None:
-        """把界面输入的项目名解析成 (目录, 显示名)：精确/尾部优先，其次包含。
-
-        与主区域 find_latest_session 用的是同一套匹配强度，两处结果才一致。
-        """
+    def _resolve_project(self, keyword: str) -> tuple[object, str, str] | None:
+        """关键字 → (来源, 项目键, 显示名)：精确/尾部优先，其次包含。"""
         if not keyword.strip():
             return None
-        best: tuple[int, Path, str] | None = None
-        for display, _kw, _count, path in list_projects(ROOT):
-            strength = match_project(display, keyword)
-            if strength and (best is None or strength > best[0]):
-                best = (strength, path, display)
-        return (best[1], best[2]) if best else None
+        best: tuple[int, object, str, str] | None = None
+        for src in getattr(self.app, "sources", []):
+            for key, name, _count in list_source_projects(src):
+                strength = match_project(name, keyword)
+                if strength and (best is None or strength > best[0]):
+                    best = (strength, src, key, name)
+        return (best[1], best[2], best[3]) if best else None
 
     def _serve_sessions(self) -> None:
         from urllib.parse import parse_qs, urlparse
 
         qs = parse_qs(urlparse(self.path).query)
+        agent = (qs.get("agent") or [""])[0]
+        project = (qs.get("project") or [""])[0]
         keyword = (qs.get("keyword") or [""])[0]
-        hit = self._resolve_project(keyword)
-        if hit is None and keyword.strip():
-            # 有关键字但没有任何项目命中，不能回退到「最新会话」，否则会误导
-            self._json({"sessions": [], "matched": False, "project": ""})
-            return
-        if hit is None:
-            from wb_gui import find_latest_session
 
-            best = find_latest_session(ROOT, "")
-            target = best[0].parent if best else None
-            resolved = ""
+        source = next((s for s in getattr(self.app, "sources", []) if s.id == agent), None)
+        resolved, key = "", ""
+        if source is not None and project:
+            key = project
+            titles = dict((k, n) for k, n, _c in list_source_projects(source))
+            resolved = titles.get(key, key)
         else:
-            target, resolved = hit
+            hit = self._resolve_project(keyword)
+            if hit is None and keyword.strip():
+                # 有关键字但没有任何项目命中，不能回退到「最新会话」，否则会误导
+                self._json({"sessions": [], "matched": False, "project": ""})
+                return
+            if hit is not None:
+                source, key, resolved = hit
+            elif getattr(self.app, "sources", []):
+                # 没有关键字：取最近活跃的那个项目
+                source = self.app.sources[0]
+                projects = list_source_projects(source)
+                if projects:
+                    key, resolved, _c = projects[0]
+
         sessions = []
-        if target is not None:
-            for path, mtime, size, preview in list_sessions(target):
+        if source is not None and key:
+            for path, mtime, size, preview in list_source_sessions(source, key):
                 sessions.append({
                     "path": str(path),
+                    "ts": int(mtime * 1000),
                     "time": format_mtime(mtime),
                     "size": human_size(size),
                     "preview": preview,
                 })
-        self._json({"sessions": sessions, "matched": True, "project": resolved})
+        self._json({
+            "sessions": sessions,
+            "matched": True,
+            "project": resolved,
+            "agent": getattr(source, "id", ""),
+        })
 
     # -- POST --------------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802
@@ -334,7 +374,8 @@ class MonitorServer:
         self.updates: "queue.Queue[UiUpdate]" = queue.Queue(maxsize=5000)
         self.commands: "queue.Queue[ControlCommand]" = queue.Queue()
         self.stop_event = threading.Event()
-        self.watcher = SessionWatcher(ROOT, self.updates, self.commands, self.stop_event)
+        self.sources = discover_sources()
+        self.watcher = SessionWatcher(self.sources, self.updates, self.commands, self.stop_event)
         self.stats = {"events": 0, "call": 0, "think": 0, "reply": 0}
         self.refresh_ms = load_refresh_ms()
         self.httpd: ThreadingHTTPServer | None = None
@@ -385,7 +426,7 @@ class MonitorServer:
                 if not self.watcher.is_alive():
                     log_startup("watcher 线程已退出，重启")
                     self.watcher = SessionWatcher(
-                        ROOT, self.updates, self.commands, self.stop_event)
+                        self.sources, self.updates, self.commands, self.stop_event)
                     self.watcher.start()
             except Exception:
                 log_startup("监督线程异常：" + traceback.format_exc(limit=3))
@@ -422,7 +463,8 @@ class MonitorServer:
         elif kind == "status":
             self.hub.broadcast({"type": "status", "text": update.text})
         elif kind == "session":
-            self.hub.broadcast({"type": "session", "text": update.text})
+            self.hub.broadcast({"type": "session", "text": update.text, "path": update.path,
+                                "agent": update.agent, "project": update.project})
         elif kind == "error":
             self.hub.broadcast({"type": "event", "kind": "warning",
                                 "label": "错误", "text": update.text, "ts": None})
@@ -488,19 +530,19 @@ class MonitorServer:
 # --------------------------------------------------------------------------
 def webview_dir() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
-    path = base / "WorkBuddyMonitor" / "webview"
+    path = base / APP_DIR / "webview"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def log_startup(message: str) -> None:
-    """--noconsole 没有控制台，把启动过程落到 %LOCALAPPDATA%\\WorkBuddyMonitor\\startup.log。
+    """--noconsole 没有控制台，把启动过程落到 %LOCALAPPDATA%\\AgentWatch\\startup.log。
 
     每次启动第一行会重写文件，只保留最近一次，出问题时把这个文件发出来即可。
     """
     try:
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
-        root = base / "WorkBuddyMonitor"
+        root = base / APP_DIR
         root.mkdir(parents=True, exist_ok=True)
         path = root / "startup.log"
         mode = "a" if getattr(log_startup, "_opened", False) else "w"
@@ -514,7 +556,7 @@ def log_startup(message: str) -> None:
 
 def settings_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
-    return base / "WorkBuddyMonitor" / "settings.json"
+    return base / APP_DIR / "settings.json"
 
 
 def load_refresh_ms() -> int:
@@ -686,7 +728,8 @@ def main() -> None:
         return
 
     server = MonitorServer()
-    log_startup(f"启动，数据目录 {ROOT}")
+    names = "；".join(f"{src.label} → {src.root}" for src in server.sources) or "未发现会话目录"
+    log_startup(f"启动，数据源：{names}")
     url = server.serve()
     log_startup(f"服务已监听 {url}")
     server.start()

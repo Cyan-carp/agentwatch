@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 
 # 构建产物（python build.py 生成，不入库；发行版走 GitHub Releases）
-WorkBuddyMonitor.exe
+*.exe
 *.exe.old
 *.spec
 build/

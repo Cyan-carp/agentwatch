@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-NAME = "WorkBuddyMonitor"
+NAME = "AgentWatch"
 TARGET = ROOT / f"{NAME}.exe"
 ASIDE = ROOT / f"{NAME}.exe.old"
 
@@ -50,7 +50,7 @@ def move_aside() -> None:
         TARGET.rename(ASIDE)
         print(f"旧 exe 已改名为 {ASIDE.name}（窗口关闭后即可删除）")
     except OSError as exc:
-        raise SystemExit(f"旧 exe 既不能覆盖也不能改名：{exc}\n请先关闭 WorkBuddy Monitor 窗口。")
+        raise SystemExit(f"旧 exe 既不能覆盖也不能改名：{exc}\n请先关闭 AgentWatch 窗口。")
 
 
 def main() -> None:
