@@ -109,6 +109,7 @@ python -m PyInstaller --noconfirm --clean --onefile --noconsole --noupx --name W
 ## 排查
 
 - 启动日志：`%LOCALAPPDATA%\WorkBuddyMonitor\startup.log` —— 监听端口、浏览器 pid、前端是否连上、退出原因
+- 界面设置：`%LOCALAPPDATA%\WorkBuddyMonitor\settings.json` —— 目前只存 `refresh_ms`（刷新间隔）
 - 浏览器 profile：`%LOCALAPPDATA%\WorkBuddyMonitor\webview\run-<pid>\`（超过 1 小时的残留会自动清理）
 - 页面顶部出现「未连接到本地服务」= 服务没跑。`file://` 直接打开 html 也会这样，属预期
 - 冻结后挂起：`python wbm_web.py --serve-only` 后用浏览器访问 `http://127.0.0.1:8765/`

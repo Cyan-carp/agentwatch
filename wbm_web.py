@@ -47,6 +47,9 @@ RECENT_LIMIT = 400          # 新客户端接入时回放多少条
 BROWSER_GRACE = 45.0        # 窗口多久没连上服务，就认为这次启动失败
 IDLE_EXIT_SECONDS = 4.0     # 连上过之后，断连多久算窗口已关（心跳 5 秒，实际约 5~9 秒退净）
 
+REFRESH_CHOICES = (0, 3000, 5000, 10000)   # 界面上可选的刷新间隔（毫秒）
+DEFAULT_REFRESH_MS = 5000
+
 EDGE_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -234,7 +237,9 @@ class Handler(BaseHTTPRequestHandler):
             after = max(0, int(raw))
         except (TypeError, ValueError):
             after = 0
-        self._json(self.hub.state(after))
+        data = self.hub.state(after)
+        data["refresh_ms"] = getattr(self.app, "refresh_ms", DEFAULT_REFRESH_MS)
+        self._json(data)
 
     def _serve_projects(self) -> None:
         items = []
@@ -331,6 +336,7 @@ class MonitorServer:
         self.stop_event = threading.Event()
         self.watcher = SessionWatcher(ROOT, self.updates, self.commands, self.stop_event)
         self.stats = {"events": 0, "call": 0, "think": 0, "reply": 0}
+        self.refresh_ms = load_refresh_ms()
         self.httpd: ThreadingHTTPServer | None = None
         self.port = 0
         self._pump_thread: threading.Thread | None = None
@@ -340,6 +346,16 @@ class MonitorServer:
     def command(self, op: str, value: str, label: str) -> None:
         if op == "pause":
             return                      # 前端本地处理
+        if op == "set_interval":
+            # 刷新间隔由前端自己计时，服务端只负责记住，下次启动直接生效
+            try:
+                ms = int(value)
+            except (TypeError, ValueError):
+                return
+            if ms in REFRESH_CHOICES:
+                self.refresh_ms = ms
+                save_refresh_ms(ms)
+            return
         try:
             self.commands.put_nowait(ControlCommand(op, value, label))
         except queue.Full:
@@ -492,6 +508,36 @@ def log_startup(message: str) -> None:
             log_startup._opened = True          # type: ignore[attr-defined]
         with path.open(mode, encoding="utf-8") as fh:
             fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {message}\n")
+    except Exception:
+        pass
+
+
+def settings_path() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+    return base / "WorkBuddyMonitor" / "settings.json"
+
+
+def load_refresh_ms() -> int:
+    """读界面上次选的刷新间隔。存在磁盘上，换窗口/重开程序都还在。"""
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
+        value = int(data.get("refresh_ms", DEFAULT_REFRESH_MS))
+    except Exception:
+        return DEFAULT_REFRESH_MS
+    return value if value in REFRESH_CHOICES else DEFAULT_REFRESH_MS
+
+
+def save_refresh_ms(value: int) -> None:
+    try:
+        path = settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        data["refresh_ms"] = int(value)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception:
         pass
 

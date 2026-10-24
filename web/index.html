@@ -615,6 +615,9 @@
     if (data.dropped && typeof data.seq === "number" && data.seq > lastSeq){
       lastSeq = data.seq;      // 断档太久，服务端只给最近一批，接受它别原地打转
     }
+    if (typeof data.refresh_ms === "number" && !refreshTouched){
+      applyInterval(data.refresh_ms, false);   // 沿用上次关窗口时的那档
+    }
   }
 
   async function tick(){
@@ -692,20 +695,27 @@
     connect();
   }, 5000);
 
-  // 刷新间隔：默认 5 秒，选择记在本机
-  function setRefresh(ms){
+  // 刷新间隔：服务端记着上次的选择（settings.json），前端只负责计时
+  const REFRESH_CHOICES = [0, 3000, 5000, 10000];
+  let currentInterval = -1;        // -1 保证首次一定会应用并同步下拉框
+  let refreshTouched = false;      // 本次动过下拉，就不再被服务端值覆盖
+
+  function applyInterval(ms, fromUser){
+    const value = REFRESH_CHOICES.includes(ms) ? ms : 5000;
+    if (!fromUser && value === currentInterval) return;   // 没变就别动计时器
+    currentInterval = value;
+    if (fromUser) send({op: "set_interval", value: String(value), label: ""});
+    intervalSel.value = String(value);
     if (refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-    if (ms > 0) refreshTimer = setInterval(tick, ms);
+    if (value > 0) refreshTimer = setInterval(tick, value);
+    if (fromUser && value > 0) tick();
   }
 
-  const savedInterval = localStorage.getItem("wb.refresh") || "5000";
-  intervalSel.value = [...intervalSel.options].some(o => o.value === savedInterval)
-    ? savedInterval : "5000";
-  setRefresh(Number(intervalSel.value));
+  applyInterval(Number(localStorage.getItem("wb.refresh")) || 5000, false);
   intervalSel.onchange = () => {
+    refreshTouched = true;
     localStorage.setItem("wb.refresh", intervalSel.value);
-    setRefresh(Number(intervalSel.value));
-    if (Number(intervalSel.value) > 0) tick();
+    applyInterval(Number(intervalSel.value), true);
   };
 
   // 取消固定：回到自动跟随最新会话

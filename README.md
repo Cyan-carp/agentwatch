@@ -33,6 +33,7 @@
 | 位置 | 内容 |
 | --- | --- |
 | `%LOCALAPPDATA%\WorkBuddyMonitor\startup.log` | 启动日志，每次启动重写，只留最近一次 |
+| `%LOCALAPPDATA%\WorkBuddyMonitor\settings.json` | 你选的刷新间隔 |
 | `%LOCALAPPDATA%\WorkBuddyMonitor\webview\run-<pid>\` | 浏览器独立配置目录，关闭后残留会在下次启动时清理 |
 
 **卸载**：删掉 exe，再删 `%LOCALAPPDATA%\WorkBuddyMonitor` 即可。
@@ -123,7 +124,7 @@ dir "$env:USERPROFILE\.codebuddy\projects"
 | --- | --- |
 | 顶栏状态灯 | 亮蓝=跟随中，琥珀=已固定，灰=等待；右侧显示当前会话 |
 | 「取消固定」 | 只在固定状态出现。点一下回到自动跟随最新会话（点侧栏某条会话就会进入固定） |
-| 「刷新」下拉 | 定时向服务端补拿增量的间隔：关 / 3 秒 / 5 秒 / 10 秒，默认 5 秒，选择记在本机 |
+| 「刷新」下拉 | 定时向服务端补拿增量的间隔：关 / 3 秒 / 5 秒 / 10 秒，默认 5 秒。选择写进 `%LOCALAPPDATA%\WorkBuddyMonitor\settings.json`，下次打开仍然生效 |
 | 侧栏「项目」 | 点输入框会下拉出所有项目（带会话数），也可以直接打简称按回车：`workbuddy`、`monitor`、`MONITOR` 都认，不分大小写；留空 = 全部项目（自动跟随最新会话） |
 | 侧栏「最近会话」 | 列出该项目最近 20 次会话（时间 · 大小 · 产出摘要），**点一条即固定**跟随那次；`⟳` 重新扫描 |
 | 暂停 / 继续 | 暂停**显示**但后台继续跟随，恢复后自动补齐，不漏事件 |
