@@ -28,7 +28,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from wb_gui import (
-    ROOT,
     ControlCommand,
     SessionWatcher,
     UiUpdate,
